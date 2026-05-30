@@ -20,11 +20,12 @@ def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
 
+    # حذف جدول قدیمی و ایجاد جدول جدید با ستون‌های کامل
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
+            username TEXT DEFAULT NULL,
+            first_name TEXT DEFAULT NULL,
             balance INTEGER DEFAULT 100000,
             total_deposit INTEGER DEFAULT 0,
             total_win INTEGER DEFAULT 0,
@@ -33,6 +34,13 @@ def init_db():
             joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # اضافه کردن ستون‌های缺失 اگر وجود ندارند
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
+    except:
+        pass
 
     cur.execute('''
         CREATE TABLE IF NOT EXISTS events (
@@ -117,14 +125,25 @@ def is_banned(user_id):
 def register_user(user_id, username, first_name):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO users (user_id, username, first_name) 
-        VALUES (%s, %s, %s) 
-        ON CONFLICT (user_id) DO NOTHING
-    """, (user_id, username, first_name))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute("""
+            INSERT INTO users (user_id, username, first_name, balance) 
+            VALUES (%s, %s, %s, 100000) 
+            ON CONFLICT (user_id) DO UPDATE 
+            SET username = EXCLUDED.username, first_name = EXCLUDED.first_name
+        """, (user_id, username, first_name))
+        conn.commit()
+    except Exception as e:
+        print(f"Error registering user: {e}")
+        # اگر ستون‌ها وجود ندارند، فقط user_id را ثبت کن
+        try:
+            cur.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+            conn.commit()
+        except:
+            pass
+    finally:
+        cur.close()
+        conn.close()
 
 # ==================== شروع بات ====================
 @bot.message_handler(commands=['start'])
@@ -670,7 +689,6 @@ def send_users_list(message):
         win_rate = round((u[4] / (u[4] + u[5] + 1) * 100), 1) if u[4] + u[5] > 0 else 0
         txt += f"`{u[0]}` | @{u[1] or '—'} | {u[3]:,} | برد: {u[4]:,} | ضرر: {u[5]:,} | {win_rate}%\n"
 
-    # ارسال در چند پیام اگر طولانی باشد
     for i in range(0, len(txt), 3000):
         bot.reply_to(message, txt[i:i+3000], parse_mode='Markdown')
 
@@ -687,7 +705,6 @@ def broadcast_confirm(message):
 
 @bot.callback_query_handler(func=lambda c: c.data == "confirm_broadcast")
 def do_broadcast(call):
-    # استخراج متن پیام
     text = call.message.text.split("\n\n", 1)[1] if "\n\n" in call.message.text else call.message.text
     
     conn = get_db_connection()
@@ -812,30 +829,24 @@ def unknown(message):
         bot.reply_to(message, "لطفاً از دکمه‌های منو استفاده کنید.", reply_markup=main_menu())
 
 # ==================== استارت بات ====================
-def startup_cleanup():
-    try:
-        bot.remove_webhook()
-        print("✅ Webhook حذف شد")
-        time.sleep(1)
-        
-        # پاک کردن آپدیت‌های معلق
-        bot.get_updates(offset=-1, limit=100)
-        print("✅ آپدیت‌های قدیمی پاک شدند")
-    except Exception as e:
-        print(f"⚠️ خطا در startup: {e}")
-
 if __name__ == "__main__":
-    startup_cleanup()
     print("🚀 بات شرط‌بندی شروع شد...")
     print(f"👑 ادمین آیدی: {ADMIN_ID}")
     
+    # پاک کردن webhook و آپدیت‌های قبلی
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except:
+        pass
+    
+    # شروع polling با تنظیمات مناسب
     while True:
         try:
             bot.infinity_polling(
-                skip_pending=True, 
-                none_stop=True, 
-                timeout=35, 
-                long_polling_timeout=35
+                timeout=60,
+                long_polling_timeout=60,
+                skip_pending=True
             )
         except Exception as e:
             print(f"❌ خطا: {e}")
