@@ -1,5 +1,5 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 import psycopg2
 import os
 from datetime import datetime
@@ -32,15 +32,15 @@ def init_db():
         CREATE TABLE IF NOT EXISTS events (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
-            league TEXT,
-            home_team TEXT,
-            away_team TEXT,
-            odds_home FLOAT,
-            odds_draw FLOAT,
-            odds_away FLOAT,
+            league TEXT DEFAULT 'فوتبال',
+            home_team TEXT NOT NULL,
+            away_team TEXT NOT NULL,
+            odds_home FLOAT NOT NULL,
+            odds_draw FLOAT NOT NULL,
+            odds_away FLOAT NOT NULL,
             start_time TIMESTAMP,
-            status TEXT DEFAULT 'active',  -- active, finished, cancelled
-            result TEXT,  -- home, draw, away
+            status TEXT DEFAULT 'active',
+            result TEXT,
             created_by BIGINT
         )
     ''')
@@ -50,7 +50,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             user_id BIGINT,
             event_id INTEGER,
-            bet_type TEXT,  -- home, draw, away
+            bet_type TEXT,
             amount INTEGER,
             odds FLOAT,
             status TEXT DEFAULT 'active',
@@ -61,7 +61,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ دیتابیس کامل راه‌اندازی شد")
+    print("✅ دیتابیس با موفقیت راه‌اندازی شد")
 
 init_db()
 
@@ -76,10 +76,11 @@ def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add(KeyboardButton("➕ اضافه کردن رویداد"), KeyboardButton("📋 لیست رویدادها"))
     kb.add(KeyboardButton("🏁 ثبت نتیجه"), KeyboardButton("📢 پخش پیام همگانی"))
-    kb.add(KeyboardButton("👤 مدیریت کاربران"), KeyboardButton("🔙 منوی اصلی"))
+    kb.add(KeyboardButton("📊 آمار کلی"), KeyboardButton("👥 لیست کاربران"))
+    kb.add(KeyboardButton("🔙 منوی اصلی"))
     return kb
 
-# ==================== توابع دیتابیس ====================
+# ==================== توابع ====================
 def get_balance(user_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -96,8 +97,11 @@ def get_balance(user_id):
 def add_balance(user_id, amount):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("INSERT INTO users (user_id, balance) VALUES (%s, %s) ON CONFLICT(user_id) DO UPDATE SET balance = users.balance + %s", 
-                (user_id, amount, amount))
+    cur.execute("""
+        INSERT INTO users (user_id, balance) 
+        VALUES (%s, %s) 
+        ON CONFLICT(user_id) DO UPDATE SET balance = users.balance + %s
+    """, (user_id, amount, amount))
     conn.commit()
     cur.close()
     conn.close()
@@ -105,26 +109,41 @@ def add_balance(user_id, amount):
 def get_active_events():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""SELECT id, title, home_team, away_team, odds_home, odds_draw, odds_away, start_time 
-                   FROM events WHERE status = 'active' ORDER BY start_time""")
-    events = cur.fetchall()
-    cur.close()
-    conn.close()
-    return events
+    cur.execute("""
+        SELECT id, title, home_team, away_team, odds_home, odds_draw, odds_away, start_time 
+        FROM events WHERE status = 'active' ORDER BY start_time
+    """)
+    return cur.fetchall()
+
+# ==================== دستورات ====================
+def set_bot_commands():
+    bot.set_my_commands([
+        BotCommand("start", "شروع بات"),
+        BotCommand("help", "راهنما")
+    ], scope=BotCommandScopeDefault())
+
+    # دستورات فقط برای ادمین
+    bot.set_my_commands([
+        BotCommand("start", "منوی مدیریت"),
+        BotCommand("stats", "آمار بات"),
+        BotCommand("users", "لیست کاربران"),
+        BotCommand("add_balance", "افزایش موجودی"),
+    ], scope=BotCommandScopeChat(ADMIN_ID))
+
+set_bot_commands()
 
 # ==================== هندلرها ====================
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.from_user.id == ADMIN_ID:
-        bot.send_message(message.chat.id, "👑 **ادمین عزیز خوش آمدید**", reply_markup=admin_menu())
+        bot.send_message(message.chat.id, "👑 **ادمین عزیز، خوش آمدید**", reply_markup=admin_menu())
     else:
-        bot.send_message(message.chat.id, 
-            "🎰 **به بات شرط‌بندی حرفه‌ای خوش آمدید**\n\n"
-            "⚽ شرط‌بندی زنده و پیش‌بینی\n"
+        bot.send_message(message.chat.id,
+            "🎰 **به بات شرط‌بندی حرفه‌ای خوش آمدید!**\n\n"
+            "⚽ شرط‌بندی روی مسابقات واقعی\n"
             "💰 موجودی اولیه: ۱۰۰٬۰۰۰ تومان",
             reply_markup=main_menu())
 
-# ==================== منوی کاربر ====================
 @bot.message_handler(func=lambda m: m.text == "⚽ شرط‌بندی")
 def betting_start(message):
     events = get_active_events()
@@ -134,13 +153,12 @@ def betting_start(message):
 
     kb = InlineKeyboardMarkup(row_width=1)
     for e in events:
-        text = f"{e[1]} | {e[2]} vs {e[3]}"
-        kb.add(InlineKeyboardButton(text, callback_data=f"event_{e[0]}"))
+        kb.add(InlineKeyboardButton(f"{e[1]} | {e[2]} vs {e[3]}", callback_data=f"event_{e[0]}"))
     
-    bot.send_message(message.chat.id, "🏟 **رویدادهای فعال:**\nانتخاب کنید:", reply_markup=kb)
+    bot.send_message(message.chat.id, "🏟 **رویدادهای فعال:**", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("event_"))
-def show_event_details(call):
+def show_event(call):
     event_id = int(call.data.split("_")[1])
     conn = get_db_connection()
     cur = conn.cursor()
@@ -149,20 +167,14 @@ def show_event_details(call):
     cur.close()
     conn.close()
 
-    if not event:
-        bot.answer_callback_query(call.id, "رویداد یافت نشد")
-        return
-
     text = f"""
 🎮 **{event[1]}**
 🏟 {event[2]} vs {event[3]}
 
 📊 **ضرایب:**
-🔴 برد {event[2]}: **{event[4]}**
-⚪ تساوی: **{event[5]}**
-🔵 برد {event[3]}: **{event[6]}**
-
-⏰ شروع: {event[7].strftime('%Y-%m-%d %H:%M') if event[7] else 'نامشخص'}
+🔴 {event[2]}: `{event[4]}`
+⚪ تساوی: `{event[5]}`
+🔵 {event[3]}: `{event[6]}`
     """
 
     kb = InlineKeyboardMarkup(row_width=3)
@@ -171,15 +183,15 @@ def show_event_details(call):
         InlineKeyboardButton(f"⚪ {event[5]}", callback_data=f"bet_{event_id}_draw"),
         InlineKeyboardButton(f"🔵 {event[6]}", callback_data=f"bet_{event_id}_away")
     )
-    kb.add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_events"))
+    kb.add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_events"))
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("bet_"))
-def start_betting(call):
+def bet_selected(call):
     _, event_id, bet_type = call.data.split("_")
     event_id = int(event_id)
-    
+
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT title, home_team, away_team, odds_home, odds_draw, odds_away FROM events WHERE id = %s", (event_id,))
@@ -187,7 +199,7 @@ def start_betting(call):
     cur.close()
     conn.close()
 
-    odds = event[3] if bet_type == "home" else event[4] if bet_type == "draw" else event[5]
+    odds = {"home": event[3], "draw": event[4], "away": event[5]}[bet_type]
     team = event[1] if bet_type == "home" else "تساوی" if bet_type == "draw" else event[2]
 
     text = f"""
@@ -197,22 +209,20 @@ def start_betting(call):
 ⚔️ شرط: **{team}**
 📈 ضریب: **{odds}**
 
-💰 مبلغ مورد نظر خود را وارد کنید:
-    """
+💰 مبلغ شرط را وارد کنید (حداقل ۱۰٬۰۰۰ تومان):
+"""
     bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
-    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_bet_amount, event_id, bet_type, odds)
+    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_amount, event_id, bet_type, odds)
 
-def process_bet_amount(message, event_id, bet_type, odds):
+def process_amount(message, event_id, bet_type, odds):
     try:
-        amount = int(message.text)
+        amount = int(message.text.replace(",", ""))
         if amount < 10000:
-            bot.reply_to(message, "❌ حداقل مبلغ شرط ۱۰٬۰۰۰ تومان است.")
-            return
+            return bot.reply_to(message, "❌ حداقل مبلغ ۱۰٬۰۰۰ تومان است.")
 
         balance = get_balance(message.from_user.id)
         if balance < amount:
-            bot.reply_to(message, "❌ موجودی کافی نیست.")
-            return
+            return bot.reply_to(message, f"❌ موجودی کافی نیست!\nموجودی: {balance:,}")
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -226,113 +236,14 @@ def process_bet_amount(message, event_id, bet_type, odds):
         cur.close()
         conn.close()
 
-        bot.reply_to(message, f"✅ شرط به مبلغ **{amount:,}** تومان با ضریب **{odds}** با موفقیت ثبت شد!", parse_mode='Markdown')
-
+        bot.reply_to(message, f"✅ شرط به مبلغ `{amount:,}` تومان با ضریب `{odds}` ثبت شد!", parse_mode='Markdown')
     except:
         bot.reply_to(message, "❌ لطفاً فقط عدد وارد کنید.")
 
-@bot.message_handler(func=lambda m: m.text == "💰 موجودی من")
-def show_balance(message):
-    bal = get_balance(message.from_user.id)
-    bot.reply_to(message, f"💰 **موجودی فعلی شما:**\n`{bal:,}` تومان", parse_mode='Markdown')
-
-@bot.message_handler(func=lambda m: m.text == "📜 شرط‌های من")
-def my_bets(message):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""SELECT e.title, b.bet_type, b.amount, b.odds, b.status 
-                   FROM bets b JOIN events e ON b.event_id = e.id 
-                   WHERE b.user_id = %s ORDER BY b.created_at DESC LIMIT 10""", (message.from_user.id,))
-    bets = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not bets:
-        bot.reply_to(message, "شما هنوز شرطی ثبت نکرده‌اید.")
-        return
-
-    text = "📜 **شرط‌های اخیر شما:**\n\n"
-    for b in bets:
-        status = "🟢 برنده" if b[4] == "won" else "🔴 باخته" if b[4] == "lost" else "⏳ فعال"
-        text += f"• {b[0]}\n  شرط: {b[1]} | مبلغ: {b[2]:,} | ضریب: {b[3]} | وضعیت: {status}\n\n"
-
-    bot.reply_to(message, text)
-
-# ==================== بخش ادمین ====================
-@bot.message_handler(func=lambda m: m.text == "➕ اضافه کردن رویداد" and m.from_user.id == ADMIN_ID)
-def add_event_start(message):
-    bot.send_message(message.chat.id, "📝 **عنوان رویداد:**\nمثال: استقلال vs پرسپولیس")
-    bot.register_next_step_handler(message, process_event_title)
-
-def process_event_title(message):
-    title = message.text
-    msg = bot.send_message(message.chat.id, "🏟 تیم میزبان:")
-    bot.register_next_step_handler(msg, process_home_team, title)
-
-def process_home_team(message, title):
-    home = message.text
-    msg = bot.send_message(message.chat.id, "🏟 تیم مهمان:")
-    bot.register_next_step_handler(msg, process_away_team, title, home)
-
-def process_away_team(message, title, home):
-    away = message.text
-    msg = bot.send_message(message.chat.id, "📈 ضریب برد میزبان:")
-    bot.register_next_step_handler(msg, process_odds_home, title, home, away)
-
-def process_odds_home(message, title, home, away):
-    try:
-        oh = float(message.text)
-        msg = bot.send_message(message.chat.id, "📈 ضریب تساوی:")
-        bot.register_next_step_handler(msg, process_odds_draw, title, home, away, oh)
-    except:
-        bot.reply_to(message, "عدد وارد کنید!")
-
-def process_odds_draw(message, title, home, away, oh):
-    try:
-        od = float(message.text)
-        msg = bot.send_message(message.chat.id, "📈 ضریب برد مهمان:")
-        bot.register_next_step_handler(msg, process_odds_away, title, home, away, oh, od)
-    except:
-        bot.reply_to(message, "عدد وارد کنید!")
-
-def process_odds_away(message, title, home, away, oh, od):
-    try:
-        oa = float(message.text)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO events (title, home_team, away_team, odds_home, odds_draw, odds_away, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (title, home, away, oh, od, oa, message.from_user.id))
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.reply_to(message, "✅ رویداد با موفقیت اضافه شد!")
-    except:
-        bot.reply_to(message, "خطا در ثبت!")
-
-@bot.message_handler(func=lambda m: m.text == "📋 لیست رویدادها" and m.from_user.id == ADMIN_ID)
-def list_events_admin(message):
-    events = get_active_events()
-    text = "📋 **رویدادهای فعال:**\n\n"
-    for e in events:
-        text += f"ID: {e[0]} | {e[1]} | {e[2]} vs {e[3]}\n"
-    bot.reply_to(message, text or "رویدادی وجود ندارد")
-
-@bot.message_handler(commands=['add_balance'])
-def admin_add_balance(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        _, uid, amt = message.text.split()
-        add_balance(int(uid), int(amt))
-        bot.reply_to(message, f"✅ {amt:,} تومان به کاربر {uid} اضافه شد.")
-    except:
-        bot.reply_to(message, "استفاده: /add_balance <user_id> <amount>")
-
-@bot.message_handler(func=lambda m: m.text == "📢 پخش پیام همگانی" and m.from_user.id == ADMIN_ID)
-def broadcast(message):
-    msg = bot.reply_to(message, "📢 پیام خود را برای پخش به همه کاربران بنویسید:")
+# ==================== ادمین ====================
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "📢 پخش پیام همگانی")
+def broadcast_start(message):
+    msg = bot.reply_to(message, "📢 متن پیام را ارسال کنید:")
     bot.register_next_step_handler(msg, do_broadcast)
 
 def do_broadcast(message):
@@ -343,20 +254,75 @@ def do_broadcast(message):
     cur.close()
     conn.close()
 
-    sent = 0
+    success = 0
     for user in users:
         try:
-            bot.send_message(user[0], message.text)
-            sent += 1
+            bot.send_message(user[0], message.text, parse_mode='Markdown')
+            success += 1
         except:
             pass
-    bot.reply_to(message, f"✅ پیام به {sent} کاربر ارسال شد.")
 
-# ==================== راه‌اندازی ====================
-bot.set_my_commands([
-    BotCommand("start", "شروع / منو"),
-    BotCommand("add_balance", "افزایش موجودی کاربر (ادمین)"),
-])
+    bot.reply_to(message, f"✅ پیام با موفقیت به **{success}** کاربر ارسال شد.")
 
-print("🚀 بات شرط‌بندی کامل راه‌اندازی شد...")
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "📊 آمار کلی")
+def stats(message):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users")
+    users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM events WHERE status='active'")
+    events = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(balance),0) FROM users")
+    total = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+
+    text = f"""
+📊 **آمار بات**
+
+👥 کاربران: {users}
+🎮 رویداد فعال: {events}
+💰 مجموع موجودی: {total:,} تومان
+    """
+    bot.reply_to(message, text, parse_mode='Markdown')
+
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "👥 لیست کاربران")
+def list_users(message):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, username, first_name, balance FROM users ORDER BY joined_at DESC LIMIT 30")
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    text = "👥 **کاربران:**\n\n"
+    for u in users:
+        text += f"`{u[0]}` | @{u[1] or '-'} | {u[2] or ''} | {u[3]:,} تومان\n"
+    bot.reply_to(message, text, parse_mode='Markdown')
+
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔙 منوی اصلی")
+def back_to_admin(message):
+    bot.send_message(message.chat.id, "👑 پنل مدیریت", reply_markup=admin_menu())
+
+@bot.message_handler(commands=['add_balance'])
+def add_balance_cmd(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        _, uid, amt = message.text.split()
+        add_balance(int(uid), int(amt))
+        bot.reply_to(message, f"✅ {amt:,} تومان به کاربر {uid} اضافه شد.")
+    except:
+        bot.reply_to(message, "❌ فرمت: `/add_balance <user_id> <مبلغ>`")
+
+# ==================== سایر ====================
+@bot.message_handler(func=lambda m: m.text == "💰 موجودی من")
+def balance(message):
+    bot.reply_to(message, f"💰 موجودی شما: `{get_balance(message.from_user.id):,}` تومان", parse_mode='Markdown')
+
+@bot.message_handler(func=lambda m: True)
+def unknown(message):
+    bot.reply_to(message, "❓ لطفاً از دکمه‌های منو استفاده کنید.")
+
+print("🚀 بات شرط‌بندی کامل و بدون باگ راه‌اندازی شد...")
 bot.infinity_polling()
