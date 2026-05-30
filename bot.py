@@ -129,15 +129,7 @@ def startup_cleanup():
     except Exception as e:
         print(f"⚠️ خطا در startup: {e}")
 
-if __name__ == "__main__":
-    startup_cleanup()
-    print("🚀 بات شرط‌بندی شروع شد...")
-    bot.infinity_polling(
-        skip_pending=True, 
-        none_stop=True, 
-        timeout=35, 
-        long_polling_timeout=35
-    )
+
 
 # ==================== هندلر ادمین ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID)
@@ -700,3 +692,13 @@ def unknown(message):
         bot.reply_to(message, "از منوی ادمین استفاده کنید.", reply_markup=admin_menu())
     else:
         bot.reply_to(message, "از منوی اصلی استفاده کنید.", reply_markup=main_menu())
+
+if __name__ == "__main__":
+    startup_cleanup()
+    print("🚀 بات شرط‌بندی شروع شد...")
+    bot.infinity_polling(
+        skip_pending=True, 
+        none_stop=True, 
+        timeout=35, 
+        long_polling_timeout=35
+    )
