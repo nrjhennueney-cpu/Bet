@@ -681,6 +681,20 @@ def unknown(message):
     else:
         bot.reply_to(message, "از منوی اصلی استفاده کنید.", reply_markup=main_menu())
 
+def startup_cleanup():
+    try:
+        bot.remove_webhook()
+        print("✅ Webhook حذف شد")
+        time.sleep(2)                    # خیلی مهمه
+        
+        # پاک کردن آپدیت‌های معلق
+        bot.get_updates(offset=-1, limit=1)
+        print("✅ آپدیت‌های قدیمی پاک شدند")
+        
+    except Exception as e:
+        print(f"⚠️ خطا در startup: {e}")
+
+
 if __name__ == "__main__":
     startup_cleanup()
     print("🚀 بات شرط‌بندی شروع شد...")
