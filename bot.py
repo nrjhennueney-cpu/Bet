@@ -115,7 +115,29 @@ def is_banned(user_id):
     return res and res[0]
 
 # ==================== شروع بات ====================
-bot.remove_webhook()
+# ==================== رفع خطای 409 + شروع بات ====================
+def startup_cleanup():
+    try:
+        bot.remove_webhook()
+        print("✅ Webhook حذف شد")
+        time.sleep(2)                    # خیلی مهمه
+        
+        # پاک کردن آپدیت‌های معلق
+        bot.get_updates(offset=-1, limit=1)
+        print("✅ آپدیت‌های قدیمی پاک شدند")
+        
+    except Exception as e:
+        print(f"⚠️ خطا در startup: {e}")
+
+if __name__ == "__main__":
+    startup_cleanup()
+    print("🚀 بات شرط‌بندی شروع شد...")
+    bot.infinity_polling(
+        skip_pending=True, 
+        none_stop=True, 
+        timeout=35, 
+        long_polling_timeout=35
+    )
 
 # ==================== هندلر ادمین ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID)
