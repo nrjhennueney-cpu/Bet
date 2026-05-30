@@ -700,6 +700,3 @@ def unknown(message):
         bot.reply_to(message, "از منوی ادمین استفاده کنید.", reply_markup=admin_menu())
     else:
         bot.reply_to(message, "از منوی اصلی استفاده کنید.", reply_markup=main_menu())
-
-print("🚀 بات شرط‌بندی کاملاً به‌روزرسانی شد...")
-bot.infinity_polling(skip_pending=True, none_stop=True)
