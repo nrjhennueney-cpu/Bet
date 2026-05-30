@@ -23,8 +23,8 @@ WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", 8080))
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "False").lower() == "true"
 
-# شناسه ادمین (عدد)
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # حتماً در Railway ست کن
+# شناسه ادمین (ثابت)
+ADMIN_ID = 6056483071
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -289,11 +289,6 @@ def process_game_title(message):
 def process_game_prediction(message, title):
     prediction = message.text
     game_id = add_game(title, prediction, message.from_user.id)
-    
-    # ساخت دکمه شیشه‌ای برای بازی جدید
-    keyboard = InlineKeyboardMarkup()
-    btn = InlineKeyboardButton(f"🎮 {title}", callback_data=f"game_{game_id}")
-    keyboard.add(btn)
     
     bot.reply_to(
         message, 
