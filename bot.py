@@ -80,7 +80,6 @@ def send_welcome(message):
         welcome_text = (
             "🤖 به بات ویکتورز کلاب خوش اومدی!\n\n"
             "ما اینجا پیش‌بینی بازی‌های مهم ورزشی از جمله فوتبال رو انجام میدیم.\n"
-            "⚡️ با ما همراه باش تا بهترین تحلیل‌ها رو دریافت کنی."
         )
         bot.send_message(message.chat.id, welcome_text)
     
