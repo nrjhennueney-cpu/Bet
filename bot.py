@@ -179,6 +179,28 @@ def start(msg):
     else:
         bot.send_message(msg.chat.id, "🎰 *به ربات پیش‌بینی خوش آمدید!*", parse_mode='Markdown', reply_markup=main_menu())
 
+
+# ==================== /fixdb ====================
+@bot.message_handler(commands=['fixdb'])
+def fixdb(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    bot.send_message(msg.chat.id, "⏳ در حال بازسازی جداول دیتابیس...")
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS bets CASCADE")
+        cur.execute("DROP TABLE IF EXISTS events CASCADE")
+        cur.execute("DROP TABLE IF EXISTS users CASCADE")
+        cur.execute("DROP TABLE IF EXISTS withdrawals CASCADE")
+        conn.commit()
+        cur.close()
+        conn.close()
+        init_db()
+        bot.send_message(msg.chat.id, "✅ دیتابیس با موفقیت بازسازی شد!\nتمام جداول از نو ساخته شدند.")
+    except Exception as e:
+        bot.send_message(msg.chat.id, f"❌ خطا:\n`{e}`", parse_mode='Markdown')
+
 # ==================== میان‌گیر دکمه‌های منو ====================
 # این هندلر قبل از next_step اجرا میشه و اگه دکمه منو بود، next_step رو کنسل میکنه
 @bot.message_handler(func=lambda m: is_menu_button(m.text), content_types=['text'])
@@ -884,8 +906,11 @@ def fallback(msg):
 
 # ==================== اجرا ====================
 print("🚀 ربات پیش‌بینی شروع شد...")
+import time as _time
+
 try:
     bot.remove_webhook()
+    _time.sleep(2)
 except: pass
 
 try:
