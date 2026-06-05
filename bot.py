@@ -41,7 +41,7 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             username TEXT,
             first_name TEXT,
-            balance INTEGER DEFAULT 100000,
+            balance INTEGER DEFAULT 10000,
             total_deposit INTEGER DEFAULT 0,
             total_won INTEGER DEFAULT 0,
             total_lost INTEGER DEFAULT 0,
@@ -259,7 +259,7 @@ def wallet(msg):
 def wallet_balance(call):
     bal = get_balance(call.from_user.id)
     bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, f"💰 موجودی شما: `{fmt(bal)}` تومان", parse_mode='Markdown')
+    bot.send_message(call.message.chat.id, f"💰 موجودی شما: `{bal/100:.2f}` TRX", parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda c: c.data == "wallet_deposit")
 def wallet_deposit(call):
@@ -306,20 +306,19 @@ def dep_approve(call):
     parts = call.data.split("_")
     uid = int(parts[2])
     amount_trx = int(parts[3]) / 100
-    amount_toman = int(amount_trx * 10000)
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET balance=balance+%s, total_deposit=total_deposit+%s WHERE user_id=%s",
-                (amount_toman, amount_toman, uid))
+                (int(amount_trx * 100), int(amount_trx * 100), uid))
     conn.commit(); cur.close(); conn.close()
     try:
         bot.edit_message_caption(
-            f"✅ تایید | {amount_trx} TRX → {fmt(amount_toman)} تومان",
+            f"✅ تایید | {amount_trx} TRX به موجودی افزوده شد",
             call.message.chat.id, call.message.message_id, reply_markup=None
         )
     except: pass
     bot.answer_callback_query(call.id, "✅ تایید شد")
-    bot.send_message(uid, f"✅ *واریز تایید شد!*\n💰 `{fmt(amount_toman)}` تومان به موجودی شما افزوده شد.", parse_mode='Markdown')
+    bot.send_message(uid, f"✅ *واریز تایید شد!*\n💰 `{amount_trx}` TRX به موجودی شما افزوده شد.", parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep_reject_"))
 def dep_reject(call):
@@ -333,10 +332,10 @@ def wallet_withdraw(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     bal = get_balance(uid)
-    min_toman = 30 * 10000
-    if bal < min_toman:
+    min_bal = 30 * 100  # 30 TRX in units
+    if bal < min_bal:
         return bot.send_message(call.message.chat.id,
-            f"❌ حداقل برداشت 30 TRX ({fmt(min_toman)} تومان) است.\nموجودی شما: {fmt(bal)} تومان")
+            f"❌ حداقل برداشت 30 TRX است.\nموجودی شما: {bal/100:.2f} TRX")
     m = bot.send_message(call.message.chat.id, "📤 آدرس ترون خود را وارد کنید:")
     bot.register_next_step_handler(m, withdraw_address_step, uid, bal)
 
@@ -346,11 +345,11 @@ def withdraw_address_step(msg, uid, bal):
     address = msg.text.strip()
     if len(address) < 30:
         return bot.send_message(msg.chat.id, "❌ آدرس نامعتبر است.")
-    amount_trx = bal / 10000
+    amount_trx = bal / 100
     conn = get_db()
     cur = conn.cursor()
     cur.execute("INSERT INTO withdrawals (user_id, amount, trx_address) VALUES (%s,%s,%s) RETURNING id",
-                (uid, bal, address))
+                (uid, int(bal), address))
     wid = cur.fetchone()[0]
     conn.commit(); cur.close(); conn.close()
     kb = InlineKeyboardMarkup()
@@ -533,7 +532,7 @@ def process_result(call):
             try:
                 bot.send_message(uid,
                     f"🎉 *شرط شما برنده شد!*\n🆚 {t1} vs {t2}\n✅ {result_label}\n"
-                    f"💰 سود: `{fmt(prize - amount)}` تومان\n🏆 دریافتی: `{fmt(prize)}` تومان",
+                    f"💰 سود: `{(prize-amount)/100:.2f}` TRX\n🏆 دریافتی: `{prize/100:.2f}` TRX",
                     parse_mode='Markdown')
             except: pass
         else:
@@ -542,7 +541,7 @@ def process_result(call):
             try:
                 bot.send_message(uid,
                     f"😔 *پیش‌بینی شما اشتباه بود!*\n🆚 {t1} vs {t2}\n❌ {result_label}\n"
-                    f"💸 از دست رفته: `{fmt(amount)}` تومان",
+                    f"💸 از دست رفته: `{amount/100:.2f}` TRX",
                     parse_mode='Markdown')
             except: pass
     conn.commit(); cur.close(); conn.close()
@@ -624,7 +623,7 @@ def user_event_selected(call):
     bot.edit_message_text(
         f"🏟 *{t1}* vs *{t2}*\n🏅 {sport} | ⏰ {hour}:00 تهران\n\n"
         f"📈 {t1}: `{o1}` | {t2}: `{o2}`" + (f" | مساوی: `{od}`" if od else "") +
-        f"\n\n💰 موجودی: `{fmt(bal)}` تومان\n\nروی کدام شرط می‌بندید؟",
+        f"\n\n💰 موجودی: `{bal/100:.2f}` TRX\n\nروی کدام شرط می‌بندید؟",
         call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("bettype_"))
@@ -637,21 +636,22 @@ def bet_type_selected(call):
     bot.answer_callback_query(call.id)
     cancel_next_step(call.message.chat.id)
     m = bot.send_message(call.message.chat.id,
-        f"💰 مبلغ شرط را وارد کنید:\n*(موجودی: {fmt(bal)} تومان)*", parse_mode='Markdown')
+        f"💰 مبلغ شرط را وارد کنید:\n*(موجودی: {bal/100:.2f} TRX)*", parse_mode='Markdown')
     bot.register_next_step_handler(m, place_bet_step, call.from_user.id, eid, btype, odds)
 
 def place_bet_step(msg, uid, eid, btype, odds):
     if is_menu_button(msg.text if msg.text else ""):
         return dispatch_menu(msg)
     try:
-        amount = int(msg.text.strip())
-        if amount <= 0:
+        amount_trx = float(msg.text.strip())
+        if amount_trx <= 0:
             raise ValueError
+        amount = int(amount_trx * 100)  # store as TRX*100
     except:
         return bot.send_message(msg.chat.id, "❌ مبلغ نامعتبر است.")
     bal = get_balance(uid)
     if amount > bal:
-        return bot.send_message(msg.chat.id, f"❌ موجودی کافی ندارید. موجودی: {fmt(bal)} تومان")
+        return bot.send_message(msg.chat.id, f"❌ موجودی کافی ندارید. موجودی: {bal/100:.2f} TRX")
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, uid))
@@ -661,8 +661,8 @@ def place_bet_step(msg, uid, eid, btype, odds):
     prize = int(amount * odds)
     bot.send_message(msg.chat.id,
         f"✅ *پیش‌بینی شما با موفقیت ثبت شد!*\n\n"
-        f"💰 مبلغ: `{fmt(amount)}` تومان | ⚖️ ضریب: `{odds}`\n"
-        f"🏆 سود احتمالی: `{fmt(prize - amount)}` تومان",
+        f"💰 مبلغ: `{amount_trx}` TRX | ⚖️ ضریب: `{odds}`\n"
+        f"🏆 سود احتمالی: `{(prize-amount)/100:.2f}` TRX",
         parse_mode='Markdown')
 
 # ==================== شرط‌های من ====================
@@ -683,7 +683,7 @@ def my_bets(msg):
     sm = {"pending": "⏳", "won": "✅", "lost": "❌"}
     txt = "📜 *شرط‌های شما:*\n\n"
     for b in bets:
-        txt += f"{sm.get(b[6],'❓')} #{b[0]} | {b[1]} vs {b[2]}\n   {b[3]} | {fmt(b[4])} تومان | ضریب {b[5]}\n\n"
+        txt += f"{sm.get(b[6],'❓')} #{b[0]} | {b[1]} vs {b[2]}\n   {b[3]} | {b[4]/100:.2f} TRX | ضریب {b[5]}\n\n"
     bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
 # ==================== رتبه‌بندی ====================
@@ -698,7 +698,7 @@ def leaderboard(msg):
     for i, u in enumerate(users):
         m = medals[i] if i < 3 else f"{i+1}."
         name = u[0] or u[1] or "ناشناس"
-        txt += f"{m} {name} | `{fmt(u[2])}` تومان\n"
+        txt += f"{m} {name} | `{u[2]/100:.2f}` TRX\n"
     bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
 # ==================== آمار کلی ====================
@@ -710,9 +710,9 @@ def stats(msg):
     cur.close(); conn.close()
     net = lost - won
     bot.send_message(msg.chat.id,
-        f"📊 *آمار کلی:*\n\n👥 کاربران: `{count}`\n📥 مجموع واریز: `{fmt(deposits)}` تومان\n"
-        f"🏆 برد کاربران: `{fmt(won)}` تومان\n💸 ضرر کاربران: `{fmt(lost)}` تومان\n"
-        f"📈 برآیند ربات: `{fmt(net)}` تومان", parse_mode='Markdown')
+        f"📊 *آمار کلی:*\n\n👥 کاربران: `{count}`\n📥 مجموع واریز: `{deposits/100:.2f}` TRX\n"
+        f"🏆 برد کاربران: `{won/100:.2f}` TRX\n💸 ضرر کاربران: `{lost/100:.2f}` TRX\n"
+        f"📈 برآیند ربات: `{net/100:.2f}` TRX", parse_mode='Markdown')
 
 # ==================== لیست کاربران ====================
 def list_users(msg):
@@ -734,7 +734,7 @@ def list_users(msg):
             wt = won + lost
             wp = f"{(won/wt*100):.0f}%" if wt > 0 else "0%"
             txt += (f"👤 `{uid2}` | @{uname or '—'} | {fname or '—'}\n"
-                    f"   💰 {fmt(bal)} | 🏆 {wp} | {ns}{fmt(net)}\n"
+                    f"   💰 {bal/100:.2f} TRX | 🏆 {wp} | {ns}{net/100:.2f} TRX\n"
                     f"   📅 {joined.strftime('%Y-%m-%d') if joined else '—'}\n\n")
         bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
@@ -769,9 +769,9 @@ def search_user_step(msg):
     kb.add(InlineKeyboardButton("💰 افزایش/کاهش موجودی", callback_data=f"editbal_{uid2}"))
     bot.send_message(msg.chat.id,
         f"🔍 *اطلاعات کاربر:*\n\n🆔 `{uid2}`\n👤 {fname or '—'} | @{uname or '—'}\n"
-        f"💰 موجودی: `{fmt(bal)}` تومان\n📥 واریز کل: `{fmt(deposit)}` تومان\n"
-        f"🏆 برد: `{fmt(won)}` | ضرر: `{fmt(lost)}`\n"
-        f"📈 برآیند: `{ns}{fmt(net)}` تومان\n🎯 درصد برد: {wp} ({wins}/{total_bets})\n"
+        f"💰 موجودی: `{bal/100:.2f}` TRX\n📥 واریز کل: `{deposit/100:.2f}` TRX\n"
+        f"🏆 برد: `{won/100:.2f}` TRX | ضرر: `{lost/100:.2f}` TRX\n"
+        f"📈 برآیند: `{ns}{abs(net)/100:.2f}` TRX\n🎯 درصد برد: {wp} ({wins}/{total_bets})\n"
         f"🚫 بن: {'بله' if banned else 'خیر'}\n📅 {joined.strftime('%Y-%m-%d') if joined else '—'}",
         parse_mode='Markdown', reply_markup=kb)
 
@@ -789,19 +789,19 @@ def editbal_step(msg, uid):
     text = msg.text.strip()
     try:
         if text.startswith("+"):
-            amount = int(text[1:])
+            amount = int(float(text[1:]) * 100)
             conn = get_db()
             cur = conn.cursor()
             cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
             conn.commit(); cur.close(); conn.close()
-            bot.send_message(msg.chat.id, f"✅ `{fmt(amount)}` تومان افزوده شد.", parse_mode='Markdown')
+            bot.send_message(msg.chat.id, f"✅ `{amount/100:.2f}` TRX افزوده شد.", parse_mode='Markdown')
         else:
-            amount = int(text)
+            amount = int(float(text) * 100)
             conn = get_db()
             cur = conn.cursor()
             cur.execute("UPDATE users SET balance=GREATEST(0,balance-%s) WHERE user_id=%s", (amount, uid))
             conn.commit(); cur.close(); conn.close()
-            bot.send_message(msg.chat.id, f"✅ `{fmt(amount)}` تومان کسر شد.", parse_mode='Markdown')
+            bot.send_message(msg.chat.id, f"✅ `{amount/100:.2f}` TRX کسر شد.", parse_mode='Markdown')
     except:
         bot.send_message(msg.chat.id, "❌ مقدار نامعتبر.")
 
