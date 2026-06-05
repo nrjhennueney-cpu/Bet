@@ -90,6 +90,22 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # اضافه کردن ستون‌های جدید اگه وجود نداشتن (migration)
+    cur.execute("""
+        ALTER TABLE events ADD COLUMN IF NOT EXISTS match_minute INTEGER NOT NULL DEFAULT 0
+    """)
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS total_deposit INTEGER DEFAULT 0
+    """)
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS total_won INTEGER DEFAULT 0
+    """)
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS total_lost INTEGER DEFAULT 0
+    """)
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE
+    """)
     conn.commit()
     cur.close()
     conn.close()
