@@ -5,6 +5,9 @@ import os
 from datetime import datetime, timedelta
 import threading
 import time
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -12,9 +15,26 @@ ADMIN_ID = 6056483071
 
 bot = telebot.TeleBot(TOKEN)
 
+# ==================== بهبود اتصال ====================
+def setup_session():
+    session = requests.Session()
+    retry = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    bot.session = session
+
+setup_session()
+
 # ==================== دیتابیس ====================
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        return conn
+    except Exception as e:
+        print(f"❌ خطای اتصال دیتابیس: {e}")
+        time.sleep(3)
+        return psycopg2.connect(DATABASE_URL, connect_timeout=10)
 
 def init_db():
     conn = get_db_connection()
@@ -56,7 +76,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             user_id BIGINT,
             event_id INTEGER,
-            bet_type TEXT,           -- home, draw, away
+            bet_type TEXT,
             amount INTEGER,
             odds FLOAT,
             status TEXT DEFAULT 'active',
@@ -67,9 +87,45 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ دیتابیس آماده شد")
+    print("✅ دیتابیس اولیه آماده شد")
+
+def migrate_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    migrations = [
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS sport TEXT;",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS home_team TEXT;",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS away_team TEXT;",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS odds_home FLOAT;",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS odds_draw FLOAT;",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS odds_away FLOAT;",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS result TEXT;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_deposit INTEGER DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_win INTEGER DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_loss INTEGER DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"
+    ]
+    for sql in migrations:
+        try:
+            cur.execute(sql)
+        except:
+            pass
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("✅ مهاجرت دیتابیس انجام شد")
 
 init_db()
+migrate_db()
+
+# ==================== پیام آپدیت بعد از دپلوی ====================
+def send_startup_message():
+    try:
+        bot.send_message(ADMIN_ID, "🚀 **بات با موفقیت آپدیت و راه‌اندازی شد**\n✅ آماده دریافت دستورات", parse_mode='Markdown')
+        print("✅ پیام آپدیت به ادمین ارسال شد")
+    except:
+        print("⚠️ پیام آپدیت ارسال نشد")
 
 # ==================== کیبوردها ====================
 def main_menu():
@@ -114,11 +170,6 @@ def is_banned(user_id):
     conn.close()
     return res and res[0]
 
-# ==================== شروع بات ====================
-# ==================== رفع خطای 409 + شروع بات ====================
-
-
-
 # ==================== هندلر ادمین ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID)
 def admin_panel(message):
@@ -138,10 +189,8 @@ def admin_panel(message):
         events = cur.fetchall()
         cur.close()
         conn.close()
-
         if not events:
             return bot.reply_to(message, "❌ پیش‌بینی فعالی وجود ندارد.")
-
         txt = "📋 **لیست پیش‌بینی‌ها:**\n\n"
         for e in events:
             txt += f"#{e[0]} | {e[1]} | {e[2]}\n⏰ {e[3]}\nوضعیت: {e[4]}\n\n"
@@ -164,7 +213,6 @@ def admin_panel(message):
         cur.execute("SELECT COALESCE(SUM(total_deposit),0) FROM users"); total_deposit = cur.fetchone()[0]
         cur.close()
         conn.close()
-
         bot.reply_to(message, f"""📊 **آمار کلی ربات**
 
 👥 کاربران: `{users}`
@@ -209,7 +257,8 @@ def process_odds_home(message, sport, title, home, away):
         msg = bot.reply_to(message, "📈 ضریب تساوی (اگر وجود ندارد 0 بزنید):")
         bot.register_next_step_handler(msg, process_odds_draw, sport, title, home, away, oh)
     except:
-        bot.reply_to(message, "❌ عدد وارد کنید!"), bot.register_next_step_handler(message, process_odds_home, sport, title, home, away)
+        bot.reply_to(message, "❌ عدد وارد کنید!")
+        bot.register_next_step_handler(message, process_odds_home, sport, title, home, away)
 
 def process_odds_draw(message, sport, title, home, away, oh):
     try:
@@ -243,76 +292,9 @@ def process_start_time(message, sport, title, home, away, oh, od, oa):
         conn.commit()
         cur.close()
         conn.close()
-
-        bot.reply_to(message, f"✅ پیش‌بینی **{title}** با موفقیت ثبت شد!", reply_markup=admin_menu())
-        
-        # یادآوری خودکار بعد از ۲ ساعت
-        threading.Timer(7200, remind_admin_result, args=[message.chat.id, title, home, away]).start()
-
+        bot.reply_to(message, f"✅ پیش‌بینی **{title}** ثبت شد!", reply_markup=admin_menu())
     except:
-        bot.reply_to(message, "❌ خطا در ثبت زمان!")
-
-def remind_admin_result(chat_id, title, home, away):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(f"تعیین نتیجه: {title}", callback_data=f"result_{title}"))
-    bot.send_message(chat_id, f"⏰ زمان تعیین نتیجه:\n{title}\n{home} vs {away}", reply_markup=kb)
-
-# ==================== تعیین نتیجه ====================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("result_"))
-def set_result(call):
-    title = call.data.split("_", 1)[1]
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, home_team, away_team FROM events WHERE title = %s AND status = 'active'", (title,))
-    event = cur.fetchone()
-    if not event:
-        return bot.answer_callback_query(call.id, "رویداد یافت نشد")
-    
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton(f"🏆 برد {event[1]}", callback_data=f"setres_{event[0]}_home"))
-    kb.add(InlineKeyboardButton("⚖ تساوی", callback_data=f"setres_{event[0]}_draw"))
-    kb.add(InlineKeyboardButton(f"🏆 برد {event[2]}", callback_data=f"setres_{event[0]}_away"))
-    
-    bot.edit_message_text(f"نتیجه {title} را انتخاب کنید:", call.message.chat.id, call.message.message_id, reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("setres_"))
-def save_result(call):
-    _, event_id, res_type = call.data.split("_")
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    cur.execute("SELECT home_team, away_team, odds_home, odds_draw, odds_away FROM events WHERE id = %s", (event_id,))
-    event = cur.fetchone()
-    
-    result_text = event[0] if res_type == "home" else "تساوی" if res_type == "draw" else event[1]
-    odds = event[2] if res_type == "home" else event[3] if res_type == "draw" else event[4]
-
-    cur.execute("UPDATE events SET status='finished', result=%s WHERE id=%s", (result_text, event_id))
-    
-    # پرداخت شرط‌ها
-    cur.execute("SELECT id, user_id, amount, odds FROM bets WHERE event_id=%s AND status='active'", (event_id,))
-    bets = cur.fetchall()
-
-    for bet in bets:
-        bet_id, user_id, amount, user_odds = bet
-        if (res_type == "home" and bet[2] == "home") or \
-           (res_type == "draw" and bet[2] == "draw") or \
-           (res_type == "away" and bet[2] == "away"):
-            win_amount = int(amount * user_odds)
-            cur.execute("UPDATE users SET balance = balance + %s, total_win = total_win + %s WHERE user_id = %s", 
-                       (win_amount, win_amount, user_id))
-            bot.send_message(user_id, f"🎉 **تبریک!** شرط شما برنده شد!\nمبلغ برنده شده: `{win_amount:,}` تومان", parse_mode='Markdown')
-        else:
-            bot.send_message(user_id, f"❌ متأسفانه شرط شما باخت.\nنتیجه: {result_text}\nمبلغ کسر شده: `{amount:,}`")
-
-        cur.execute("UPDATE bets SET status='settled' WHERE id=%s", (bet_id,))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    bot.answer_callback_query(call.id, "نتیجه ثبت و تسویه شد ✅")
-
-# ==================== ادامه کد (بخش دوم) ====================
+        bot.reply_to(message, "❌ خطا در ثبت!")
 
 # ==================== کیف پول ====================
 @bot.message_handler(func=lambda m: m.text == "💰 کیف پول")
@@ -334,10 +316,7 @@ def deposit_request(message):
 def process_deposit_amount(message):
     try:
         amount = float(message.text)
-        if amount <= 0:
-            raise ValueError
-        user_id = message.from_user.id
-        
+        if amount <= 0: raise ValueError
         text = f"""💳 **درخواست واریز**
 
 مبلغ: `{amount}` TRX
@@ -345,17 +324,15 @@ def process_deposit_amount(message):
 📍 آدرس واریز:
 `TQxhiwDREd8rxZuyDWx3auxcpzjSi1mAJG`
 
-✅ بعد از واریز، رسید (عکس) را ارسال کنید."""
-
+✅ بعد از واریز، رسید را ارسال کنید."""
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("❌ لغو", callback_data=f"cancel_dep_{user_id}"))
-        
+        kb.add(InlineKeyboardButton("❌ لغو", callback_data=f"cancel_dep_{message.from_user.id}"))
         bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=kb)
         bot.register_next_step_handler(message, process_deposit_receipt, amount)
-        
     except:
-        bot.reply_to(message, "❌ لطفاً عدد معتبر وارد کنید!")
+        bot.reply_to(message, "❌ عدد معتبر وارد کنید!")
 
+# ==================== ادامه توابع واریز ====================
 def process_deposit_receipt(message, amount):
     if not message.photo:
         return bot.reply_to(message, "❌ باید عکس رسید ارسال کنید!")
@@ -379,7 +356,7 @@ def process_deposit_receipt(message, amount):
 def confirm_deposit(call):
     _, user_id, amount = call.data.split("_")
     user_id = int(user_id)
-    amount_toman = int(float(amount) * 35000)  # تقریبی - می‌توانید نرخ را تغییر دهید
+    amount_toman = int(float(amount) * 35000)   # نرخ تقریبی ترون به تومان
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -402,15 +379,15 @@ def reject_deposit(call):
 @bot.message_handler(func=lambda m: m.text == "➖ برداشت موجودی")
 def withdraw_request(message):
     balance = get_balance(message.from_user.id)
-    if balance < 1050000:  # حداقل ۳۰ ترون ≈ ۱.۰۵ میلیون تومان
-        return bot.reply_to(message, "❌ حداقل موجودی برای برداشت ۳۰ ترون (حدود ۱٫۰۵ میلیون تومان) است.")
+    if balance < 1050000:
+        return bot.reply_to(message, "❌ حداقل موجودی برای برداشت ۱٫۰۵ میلیون تومان است.")
     
     msg = bot.reply_to(message, "🏧 آدرس والت ترون خود را ارسال کنید:")
     bot.register_next_step_handler(msg, process_withdraw_address, balance)
 
 def process_withdraw_address(message, balance):
     address = message.text.strip()
-    amount_trx = balance // 35000  # تقریبی
+    amount_trx = balance // 35000
 
     text = f"""🟡 **درخواست برداشت**
 
@@ -429,11 +406,10 @@ def process_withdraw_address(message, balance):
 def paid_withdraw(call):
     _, user_id, amount = call.data.split("_")
     user_id = int(user_id)
-    
-    bot.send_message(user_id, f"✅ مبلغ `{amount}` ترون به والت شما واریز شد.\nموجودی شما صفر شد.", parse_mode='Markdown')
+    bot.send_message(user_id, f"✅ مبلغ `{amount}` ترون به والت شما واریز شد.\nموجودی صفر شد.", parse_mode='Markdown')
     bot.edit_message_text("✅ برداشت ثبت شد.", call.message.chat.id, call.message.message_id)
 
-# ==================== شرط‌بندی کاربر ====================
+# ==================== شرط‌بندی ====================
 @bot.message_handler(func=lambda m: m.text == "⚽ پیش‌بینی")
 def betting(message):
     if is_banned(message.from_user.id):
@@ -459,17 +435,13 @@ def show_events_by_sport(call):
     sport = call.data.split("_")[1]
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT id, title, home_team, away_team, start_time 
-        FROM events 
-        WHERE sport = %s AND status = 'active'
-    """, (sport,))
+    cur.execute("SELECT id, title, home_team, away_team, start_time FROM events WHERE sport = %s AND status = 'active'", (sport,))
     events = cur.fetchall()
     cur.close()
     conn.close()
 
     if not events:
-        return bot.answer_callback_query(call.id, "رویدادی در این ورزش وجود ندارد.")
+        return bot.answer_callback_query(call.id, "رویدادی یافت نشد.")
 
     kb = InlineKeyboardMarkup(row_width=1)
     for e in events:
@@ -527,185 +499,45 @@ def process_bet_amount(message, event_id, bet_type, odd):
     try:
         amount = int(message.text)
         balance = get_balance(message.from_user.id)
-        
         if amount > balance or amount < 10000:
             return bot.reply_to(message, "❌ مبلغ نامعتبر یا موجودی کافی نیست.")
 
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO bets (user_id, event_id, bet_type, amount, odds)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (message.from_user.id, event_id, bet_type, amount, odd))
-        
+        cur.execute("INSERT INTO bets (user_id, event_id, bet_type, amount, odds) VALUES (%s, %s, %s, %s, %s)",
+                    (message.from_user.id, event_id, bet_type, amount, odd))
         cur.execute("UPDATE users SET balance = balance - %s WHERE user_id = %s", (amount, message.from_user.id))
         conn.commit()
         cur.close()
         conn.close()
 
-        bot.reply_to(message, "✅ **پیش‌بینی شما با موفقیت ثبت شد!**", parse_mode='Markdown')
-        
+        bot.reply_to(message, "✅ **پیش‌بینی شما ثبت شد!**", parse_mode='Markdown')
     except:
-        bot.reply_to(message, "❌ لطفاً عدد معتبر وارد کنید!")
+        bot.reply_to(message, "❌ عدد معتبر وارد کنید!")
 
-# ==================== لیست کاربران ====================
-def send_users_list(message):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, username, first_name, balance, total_win, total_loss, joined_at 
-        FROM users ORDER BY joined_at DESC
-    """)
-    users = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not users:
-        return bot.reply_to(message, "هیچ کاربری یافت نشد.")
-
-    txt = "👥 **لیست کاربران**\n\n"
-    for u in users:
-        win_rate = round((u[4] / (u[4] + u[5] + 1) * 100), 1) if u[4] + u[5] > 0 else 0
-        txt += f"`{u[0]}` | @{u[1] or '—'} | {u[3]:,} | برد: {u[4]:,} | ضرر: {u[5]:,} | {win_rate}%\n"
-
-    # ارسال در چند پیام اگر طولانی باشد
-    for i in range(0, len(txt), 3000):
-        bot.reply_to(message, txt[i:i+3000], parse_mode='Markdown')
-
-# ==================== پخش پیام همگانی ====================
-def broadcast_confirm(message):
-    if message.text in ["لغو", "/cancel", "cancel"]:
-        return bot.reply_to(message, "❌ لغو شد.")
-    
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✅ ارسال شود", callback_data="confirm_broadcast"))
-    kb.add(InlineKeyboardButton("❌ لغو", callback_data="cancel_broadcast"))
-    
-    bot.reply_to(message, f"مطمئن هستید این پیام به همه ارسال شود؟\n\n{message.text}", reply_markup=kb)
-    bot.register_next_step_handler(message, lambda m: None)  # جلوگیری از ثبت دوباره
-
-@bot.callback_query_handler(func=lambda c: c.data == "confirm_broadcast")
-def do_broadcast(call):
-    text = call.message.text.split("\n\n", 1)[1] if "\n\n" in call.message.text else call.message.text
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE is_banned = FALSE")
-    users = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    success = 0
-    for u in users:
-        try:
-            bot.send_message(u[0], text)
-            success += 1
-            time.sleep(0.05)
-        except:
-            pass
-    bot.edit_message_text(f"✅ پیام به {success} کاربر ارسال شد.", call.message.chat.id, call.message.message_id)
-
-# ==================== سایر دستورات ادمین ====================
-@bot.message_handler(commands=['ban'], func=lambda m: m.from_user.id == ADMIN_ID)
-def ban_user(message):
-    try:
-        user_id = int(message.text.split()[1])
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET is_banned = TRUE WHERE user_id = %s", (user_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.reply_to(message, f"✅ کاربر `{user_id}` بن شد.")
-    except:
-        bot.reply_to(message, "❌ دستور اشتباه: /ban USER_ID")
-
-@bot.message_handler(commands=['unban'], func=lambda m: m.from_user.id == ADMIN_ID)
-def unban_user(message):
-    try:
-        user_id = int(message.text.split()[1])
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET is_banned = FALSE WHERE user_id = %s", (user_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.reply_to(message, f"✅ کاربر `{user_id}` آنبن شد.")
-    except:
-        bot.reply_to(message, "❌ دستور اشتباه: /unban USER_ID")
-
-@bot.message_handler(commands=['search'], func=lambda m: m.from_user.id == ADMIN_ID)
-def search_user(message):
-    try:
-        user_id = int(message.text.split()[1])
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if not user:
-            return bot.reply_to(message, "❌ کاربر یافت نشد.")
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💰 افزایش/کاهش موجودی", callback_data=f"editbal_{user_id}"))
-
-        bot.reply_to(message, f"👤 اطلاعات کاربر:\n`{user}`", parse_mode='Markdown', reply_markup=kb)
-    except:
-        bot.reply_to(message, "❌ /search USER_ID")
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("editbal_"))
-def edit_balance(call):
-    user_id = int(call.data.split("_")[1])
-    msg = bot.send_message(call.message.chat.id, "مبلغ را وارد کنید:\n+ برای افزایش\nبدون علامت برای کسر")
-    bot.register_next_step_handler(msg, process_balance_edit, user_id)
-
-def process_balance_edit(message, user_id):
-    try:
-        amount = int(message.text)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (amount, user_id))
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.reply_to(message, f"✅ موجودی کاربر `{user_id}` تغییر کرد.")
-    except:
-        bot.reply_to(message, "❌ عدد وارد کنید!")
-
-# ==================== هندلر ناشناخته ====================
-@bot.message_handler(func=lambda m: True)
-def unknown(message):
-    if message.from_user.id == ADMIN_ID:
-        bot.reply_to(message, "از منوی ادمین استفاده کنید.", reply_markup=admin_menu())
-    else:
-        bot.reply_to(message, "از منوی اصلی استفاده کنید.", reply_markup=main_menu())
-
-                 # خیلی مهمه
-        
-        # پاک کردن آپدیت‌های معلق
-        bot.get_updates(offset=-1, limit=1)
-        print("✅ آپدیت‌های قدیمی پاک شدند")
-        
-    
+# ==================== شروع بات ====================
 def startup_cleanup():
     try:
         bot.remove_webhook()
-        print("✅ Webhook حذف شد")
-        time.sleep(2)
-
         bot.get_updates(offset=-1, limit=1)
-        print("✅ آپدیت‌های قدیمی پاک شدند")
-
-    except Exception as e:
-        print(f"⚠️ خطا در startup: {e}")
+        print("✅ پاکسازی اولیه انجام شد")
+    except:
+        pass
 
 if __name__ == "__main__":
     startup_cleanup()
+    send_startup_message()
     print("🚀 بات شرط‌بندی شروع شد...")
-    bot.infinity_polling(
-        skip_pending=True, 
-        none_stop=True, 
-        timeout=35, 
-        long_polling_timeout=35
-    )
+    
+    while True:
+        try:
+            bot.infinity_polling(
+                skip_pending=True,
+                none_stop=True,
+                timeout=30,
+                long_polling_timeout=30,
+                allowed_updates=['message', 'callback_query']
+            )
+        except Exception as e:
+            print(f"⚠️ خطای polling: {e}")
+            time.sleep(5)
