@@ -7,19 +7,16 @@ import psycopg2
 import os
 import threading
 import time
-from datetime import datetime, timedelta
-import pytz
+from datetime import datetime, timezone, timedelta
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 6056483071
 TRON_ADDRESS = "TQxhiwDREd8rxZuyDWx3auxcpzjSi1mAJG"
-TEHRAN_TZ = pytz.timezone("Asia/Tehran")
+TEHRAN_OFFSET = timedelta(hours=3, minutes=30)
 
 bot = telebot.TeleBot(TOKEN)
-
-# ==================== وضعیت گلوبال ====================
-bot_active = True  # خاموش/روشن بات برای کاربران
+bot_active = True
 
 # ==================== دیتابیس ====================
 def get_db():
@@ -28,7 +25,6 @@ def get_db():
 def init_db():
     conn = get_db()
     cur = conn.cursor()
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -42,7 +38,6 @@ def init_db():
             joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS events (
             id SERIAL PRIMARY KEY,
@@ -59,7 +54,6 @@ def init_db():
             notified BOOLEAN DEFAULT FALSE
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS bets (
             id SERIAL PRIMARY KEY,
@@ -72,7 +66,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS withdrawals (
             id SERIAL PRIMARY KEY,
@@ -83,7 +76,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
     conn.commit()
     cur.close()
     conn.close()
@@ -91,6 +83,10 @@ def init_db():
 init_db()
 
 # ==================== ابزارها ====================
+def now_tehran():
+    utc_now = datetime.now(timezone.utc)
+    return utc_now + TEHRAN_OFFSET
+
 def ensure_user(user):
     conn = get_db()
     cur = conn.cursor()
@@ -122,11 +118,8 @@ def is_banned(uid):
     conn.close()
     return r[0] if r else False
 
-def format_number(n):
+def fmt(n):
     return f"{n:,}"
-
-def now_tehran():
-    return datetime.now(TEHRAN_TZ)
 
 # ==================== کیبوردها ====================
 def main_menu():
@@ -154,6 +147,8 @@ def wallet_menu():
     )
     return kb
 
+SPORTS = ["⚽ فوتبال", "🎾 تنیس", "🏐 والیبال"]
+
 # ==================== /start ====================
 @bot.message_handler(commands=['start'])
 def start(msg):
@@ -173,7 +168,7 @@ def wallet(msg):
 def wallet_balance(call):
     bal = get_balance(call.from_user.id)
     bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, f"💰 موجودی شما: `{format_number(bal)}` تومان", parse_mode='Markdown')
+    bot.send_message(call.message.chat.id, f"💰 موجودی شما: `{fmt(bal)}` تومان", parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda c: c.data == "wallet_deposit")
 def wallet_deposit(call):
@@ -188,7 +183,6 @@ def deposit_amount_step(msg, uid):
             raise ValueError
     except:
         return bot.send_message(msg.chat.id, "❌ مقدار نامعتبر است.")
-
     bot.send_message(
         msg.chat.id,
         f"📥 *آدرس واریز ترون:*\n\n`{TRON_ADDRESS}`\n\n"
@@ -201,7 +195,6 @@ def deposit_amount_step(msg, uid):
 def deposit_receipt_step(msg, uid, amount):
     if not msg.photo:
         return bot.send_message(msg.chat.id, "❌ لطفاً عکس رسید را ارسال کنید.")
-
     file_id = msg.photo[-1].file_id
     kb = InlineKeyboardMarkup()
     kb.add(
@@ -209,11 +202,9 @@ def deposit_receipt_step(msg, uid, amount):
         InlineKeyboardButton("❌ رد", callback_data=f"dep_reject_{uid}")
     )
     bot.send_photo(
-        ADMIN_ID,
-        file_id,
+        ADMIN_ID, file_id,
         caption=f"📥 *درخواست واریز*\n👤 کاربر: `{uid}`\n💰 مبلغ: `{amount}` TRX",
-        parse_mode='Markdown',
-        reply_markup=kb
+        parse_mode='Markdown', reply_markup=kb
     )
     bot.send_message(msg.chat.id, "✅ رسید دریافت شد. منتظر تایید ادمین باشید.")
 
@@ -222,8 +213,7 @@ def dep_approve(call):
     parts = call.data.split("_")
     uid = int(parts[2])
     amount_trx = int(parts[3]) / 100
-    amount_toman = int(amount_trx * 10000)  # هر TRX = 10,000 تومان (قابل تغییر)
-
+    amount_toman = int(amount_trx * 10000)
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET balance=balance+%s, total_deposit=total_deposit+%s WHERE user_id=%s",
@@ -231,10 +221,9 @@ def dep_approve(call):
     conn.commit()
     cur.close()
     conn.close()
-
-    bot.edit_message_caption(f"✅ تایید شد | {amount_trx} TRX → {format_number(amount_toman)} تومان",
+    bot.edit_message_caption(f"✅ تایید شد | {amount_trx} TRX → {fmt(amount_toman)} تومان",
                              call.message.chat.id, call.message.message_id)
-    bot.send_message(uid, f"✅ *واریز تایید شد!*\n💰 `{format_number(amount_toman)}` تومان به موجودی شما افزوده شد.", parse_mode='Markdown')
+    bot.send_message(uid, f"✅ *واریز تایید شد!*\n💰 `{fmt(amount_toman)}` تومان به موجودی شما افزوده شد.", parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep_reject_"))
 def dep_reject(call):
@@ -248,13 +237,10 @@ def wallet_withdraw(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     bal = get_balance(uid)
-    min_trx = 30
-    min_toman = min_trx * 10000
-
+    min_toman = 30 * 10000
     if bal < min_toman:
         return bot.send_message(call.message.chat.id,
-                                f"❌ حداقل برداشت {min_trx} TRX ({format_number(min_toman)} تومان) است.\nموجودی شما: {format_number(bal)} تومان")
-
+            f"❌ حداقل برداشت 30 TRX ({fmt(min_toman)} تومان) است.\nموجودی شما: {fmt(bal)} تومان")
     msg = bot.send_message(call.message.chat.id, "📤 آدرس ترون خود را وارد کنید:")
     bot.register_next_step_handler(msg, withdraw_address_step, uid, bal)
 
@@ -262,27 +248,21 @@ def withdraw_address_step(msg, uid, bal):
     address = msg.text.strip()
     if len(address) < 30:
         return bot.send_message(msg.chat.id, "❌ آدرس نامعتبر است.")
-
-    amount_toman = bal
     amount_trx = bal / 10000
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute("INSERT INTO withdrawals (user_id, amount, trx_address) VALUES (%s,%s,%s) RETURNING id",
-                (uid, amount_toman, address))
+                (uid, bal, address))
     wid = cur.fetchone()[0]
     conn.commit()
     cur.close()
     conn.close()
-
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("✅ واریز انجام شد", callback_data=f"withdraw_done_{uid}_{wid}_{int(amount_trx*100)}"))
-
     bot.send_message(
         ADMIN_ID,
         f"💸 *درخواست برداشت*\n👤 کاربر: `{uid}`\n💰 مبلغ: `{amount_trx:.1f}` TRX\n📮 آدرس:\n`{address}`",
-        parse_mode='Markdown',
-        reply_markup=kb
+        parse_mode='Markdown', reply_markup=kb
     )
     bot.send_message(msg.chat.id, "✅ درخواست برداشت ثبت شد. منتظر پردازش باشید.")
 
@@ -292,21 +272,17 @@ def withdraw_done(call):
     uid = int(parts[2])
     wid = int(parts[3])
     amount_trx = int(parts[4]) / 100
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE withdrawals SET status='done' WHERE id=%s", (wid,))
     conn.commit()
     cur.close()
     conn.close()
-
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
     bot.send_message(uid, f"✅ *برداشت انجام شد!*\n💰 `{amount_trx:.1f}` TRX به حساب شما واریز شد.", parse_mode='Markdown')
     bot.answer_callback_query(call.id, "✅ ارسال شد")
 
-# ==================== اضافه کردن پیش‌بینی (ادمین) ====================
-SPORTS = ["⚽ فوتبال", "🎾 تنیس", "🏐 والیبال"]
-
+# ==================== اضافه کردن پیش‌بینی ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "➕ اضافه کردن پیش‌بینی")
 def add_prediction(msg):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -317,9 +293,8 @@ def add_prediction(msg):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("sport_"))
 def sport_selected(call):
     sport = call.data[6:]
-    bot.edit_message_text(f"✅ ورزش انتخاب شد: {sport}", call.message.chat.id, call.message.message_id)
-    msg = bot.send_message(call.message.chat.id,
-                           f"📝 کانداکتور بازی را وارد کنید:\nمثال: `PSG vs Arsenal`", parse_mode='Markdown')
+    bot.edit_message_text(f"✅ ورزش: {sport}", call.message.chat.id, call.message.message_id)
+    msg = bot.send_message(call.message.chat.id, "📝 کانداکتور بازی را وارد کنید:\nمثال: `PSG vs Arsenal`", parse_mode='Markdown')
     bot.register_next_step_handler(msg, add_teams_step, sport)
 
 def add_teams_step(msg, sport):
@@ -327,8 +302,7 @@ def add_teams_step(msg, sport):
     if " vs " not in text.lower():
         return bot.send_message(msg.chat.id, "❌ فرمت اشتباه. مثال: PSG vs Arsenal")
     parts = text.split(" vs ")
-    team1 = parts[0].strip()
-    team2 = parts[1].strip()
+    team1, team2 = parts[0].strip(), parts[1].strip()
     m = bot.send_message(msg.chat.id, f"📈 ضریب {team1}?")
     bot.register_next_step_handler(m, add_odds1_step, sport, team1, team2)
 
@@ -345,12 +319,11 @@ def add_odds2_step(msg, sport, team1, team2, o1):
         o2 = float(msg.text.strip())
     except:
         return bot.send_message(msg.chat.id, "❌ عدد وارد کنید!")
-
     if sport == "⚽ فوتبال":
         m = bot.send_message(msg.chat.id, "📈 ضریب مساوی؟")
         bot.register_next_step_handler(m, add_draw_step, sport, team1, team2, o1, o2)
     else:
-        m = bot.send_message(msg.chat.id, "🕐 ساعت بازی (به وقت تهران)?\nمثال: 19 یا 5")
+        m = bot.send_message(msg.chat.id, "🕐 ساعت بازی (به وقت تهران)?\nمثال: 19")
         bot.register_next_step_handler(m, add_hour_step, sport, team1, team2, o1, o2, None)
 
 def add_draw_step(msg, sport, team1, team2, o1, o2):
@@ -358,17 +331,16 @@ def add_draw_step(msg, sport, team1, team2, o1, o2):
         od = float(msg.text.strip())
     except:
         return bot.send_message(msg.chat.id, "❌ عدد وارد کنید!")
-    m = bot.send_message(msg.chat.id, "🕐 ساعت بازی (به وقت تهران)?\nمثال: 19 یا 5")
+    m = bot.send_message(msg.chat.id, "🕐 ساعت بازی (به وقت تهران)?\nمثال: 19")
     bot.register_next_step_handler(m, add_hour_step, sport, team1, team2, o1, o2, od)
 
 def add_hour_step(msg, sport, team1, team2, o1, o2, od):
     try:
         hour = int(msg.text.strip())
-        if hour < 0 or hour > 23:
+        if not 0 <= hour <= 23:
             raise ValueError
     except:
         return bot.send_message(msg.chat.id, "❌ عدد بین 0 تا 23 وارد کنید!")
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
@@ -379,22 +351,15 @@ def add_hour_step(msg, sport, team1, team2, o1, o2, od):
     conn.commit()
     cur.close()
     conn.close()
-
     draw_txt = f"\n🤝 مساوی: `{od}`" if od else ""
     bot.send_message(
         msg.chat.id,
-        f"✅ *پیش‌بینی ثبت شد!*\n\n"
-        f"🏅 ورزش: {sport}\n"
-        f"🆚 {team1} vs {team2}\n"
-        f"📈 ضریب {team1}: `{o1}`\n"
-        f"📈 ضریب {team2}: `{o2}`{draw_txt}\n"
-        f"🕐 ساعت: {hour}:00 تهران\n"
-        f"🔢 ID: `{eid}`",
-        parse_mode='Markdown',
-        reply_markup=admin_menu()
+        f"✅ *پیش‌بینی ثبت شد!*\n\n🏅 {sport}\n🆚 {team1} vs {team2}\n"
+        f"📈 {team1}: `{o1}` | {team2}: `{o2}`{draw_txt}\n⏰ ساعت: {hour}:00\n🔢 ID: `{eid}`",
+        parse_mode='Markdown', reply_markup=admin_menu()
     )
 
-# ==================== لیست پیش‌بینی‌ها (ادمین) ====================
+# ==================== لیست پیش‌بینی‌ها ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "📋 لیست پیش‌بینی‌ها")
 def list_events_admin(msg):
     conn = get_db()
@@ -411,19 +376,19 @@ def list_events_admin(msg):
         txt += f"#{e[0]} {e[1]}\n🆚 {e[2]} vs {e[3]}\n⚖️ {e[4]} | {e[5]}{draw} | ⏰{e[7]}:00\n\n"
     bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
-# ==================== تعیین نتیجه (inline button) ====================
+# ==================== تعیین نتیجه ====================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("setresult_"))
 def set_result_menu(call):
     eid = int(call.data.split("_")[1])
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT team1, team2, odds1, odds2, odds_draw FROM events WHERE id=%s", (eid,))
+    cur.execute("SELECT team1, team2, odds_draw FROM events WHERE id=%s", (eid,))
     e = cur.fetchone()
     cur.close()
     conn.close()
     if not e:
         return bot.answer_callback_query(call.id, "رویداد یافت نشد.")
-    t1, t2, o1, o2, od = e
+    t1, t2, od = e
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(f"🏆 برد {t1}", callback_data=f"result_{eid}_1"),
@@ -431,32 +396,27 @@ def set_result_menu(call):
     )
     if od:
         kb.add(InlineKeyboardButton("🤝 مساوی", callback_data=f"result_{eid}_draw"))
-    bot.send_message(call.message.chat.id, f"نتیجه بازی *{t1}* vs *{t2}* را انتخاب کنید:", parse_mode='Markdown', reply_markup=kb)
+    bot.send_message(call.message.chat.id, f"نتیجه *{t1}* vs *{t2}*:", parse_mode='Markdown', reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("result_"))
 def process_result(call):
     parts = call.data.split("_")
     eid = int(parts[1])
     outcome = parts[2]
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT team1, team2, odds1, odds2, odds_draw FROM events WHERE id=%s", (eid,))
     e = cur.fetchone()
     if not e:
         cur.close(); conn.close()
-        return bot.answer_callback_query(call.id, "❌ رویداد یافت نشد.")
+        return
     t1, t2, o1, o2, od = e
-
     result_label = {"1": f"برد {t1}", "2": f"برد {t2}", "draw": "مساوی"}[outcome]
     win_odds_map = {"1": o1, "2": o2, "draw": od}
     win_odds = win_odds_map[outcome]
-
     cur.execute("UPDATE events SET status='finished', result=%s WHERE id=%s", (outcome, eid))
-
     cur.execute("SELECT id, user_id, bet_type, amount, odds FROM bets WHERE event_id=%s AND status='pending'", (eid,))
     bets = cur.fetchall()
-
     for bid, uid, btype, amount, odds in bets:
         if btype == outcome:
             prize = int(amount * odds)
@@ -464,36 +424,25 @@ def process_result(call):
             cur.execute("UPDATE bets SET status='won' WHERE id=%s", (bid,))
             try:
                 bot.send_message(uid,
-                    f"🎉 *شرط شما برنده شد!*\n\n"
-                    f"🆚 {t1} vs {t2}\n"
-                    f"✅ نتیجه: {result_label}\n"
-                    f"💰 سود شما: `{format_number(prize - amount)}` تومان\n"
-                    f"🏆 مبلغ دریافتی: `{format_number(prize)}` تومان",
-                    parse_mode='Markdown'
-                )
-            except:
-                pass
+                    f"🎉 *شرط شما برنده شد!*\n🆚 {t1} vs {t2}\n✅ {result_label}\n"
+                    f"💰 سود: `{fmt(prize - amount)}` تومان\n🏆 دریافتی: `{fmt(prize)}` تومان",
+                    parse_mode='Markdown')
+            except: pass
         else:
             cur.execute("UPDATE users SET total_lost=total_lost+%s WHERE user_id=%s", (amount, uid))
             cur.execute("UPDATE bets SET status='lost' WHERE id=%s", (bid,))
             try:
                 bot.send_message(uid,
-                    f"😔 *پیش‌بینی شما اشتباه بود!*\n\n"
-                    f"🆚 {t1} vs {t2}\n"
-                    f"❌ نتیجه: {result_label}\n"
-                    f"💸 مبلغ از دست رفته: `{format_number(amount)}` تومان",
-                    parse_mode='Markdown'
-                )
-            except:
-                pass
-
+                    f"😔 *پیش‌بینی شما اشتباه بود!*\n🆚 {t1} vs {t2}\n❌ {result_label}\n"
+                    f"💸 از دست رفته: `{fmt(amount)}` تومان",
+                    parse_mode='Markdown')
+            except: pass
     conn.commit()
     cur.close()
     conn.close()
-
     bot.edit_message_text(f"✅ نتیجه ثبت شد: *{result_label}*", call.message.chat.id, call.message.message_id, parse_mode='Markdown')
 
-# ==================== ریمایندر نتیجه (background thread) ====================
+# ==================== ریمایندر نتیجه ====================
 def result_reminder_thread():
     while True:
         time.sleep(60)
@@ -508,12 +457,9 @@ def result_reminder_thread():
                 if now.hour == remind_hour and now.minute < 5:
                     kb = InlineKeyboardMarkup()
                     kb.add(InlineKeyboardButton("🏁 تعیین نتیجه", callback_data=f"setresult_{eid}"))
-                    bot.send_message(
-                        ADMIN_ID,
+                    bot.send_message(ADMIN_ID,
                         f"⏰ بازی *{t1}* vs *{t2}* احتمالاً تمام شده!\nلطفاً نتیجه را ثبت کنید:",
-                        parse_mode='Markdown',
-                        reply_markup=kb
-                    )
+                        parse_mode='Markdown', reply_markup=kb)
                     cur.execute("UPDATE events SET notified=TRUE WHERE id=%s", (eid,))
             conn.commit()
             cur.close()
@@ -523,7 +469,7 @@ def result_reminder_thread():
 
 threading.Thread(target=result_reminder_thread, daemon=True).start()
 
-# ==================== پیش‌بینی (کاربر) ====================
+# ==================== پیش‌بینی کاربر ====================
 @bot.message_handler(func=lambda m: m.text == "⚽ پیش‌بینی")
 def user_betting(msg):
     ensure_user(msg.from_user)
@@ -531,7 +477,6 @@ def user_betting(msg):
         return bot.send_message(msg.chat.id, "🔴 ربات در حال حاضر غیرفعال است.")
     if is_banned(msg.from_user.id):
         return bot.send_message(msg.chat.id, "🚫 حساب شما مسدود شده است.")
-
     kb = InlineKeyboardMarkup(row_width=1)
     for s in SPORTS:
         kb.add(InlineKeyboardButton(s, callback_data=f"usersport_{s}"))
@@ -546,10 +491,8 @@ def user_sport_selected(call):
     events = cur.fetchall()
     cur.close()
     conn.close()
-
     if not events:
         return bot.answer_callback_query(call.id, "❌ بازی فعالی یافت نشد.", show_alert=True)
-
     kb = InlineKeyboardMarkup(row_width=1)
     for e in events:
         kb.add(InlineKeyboardButton(f"{e[1]} vs {e[2]} | ⏰{e[3]}:00", callback_data=f"userevent_{e[0]}"))
@@ -564,33 +507,22 @@ def user_event_selected(call):
     e = cur.fetchone()
     cur.close()
     conn.close()
-
     if not e:
         return bot.answer_callback_query(call.id, "❌ رویداد یافت نشد.")
-
     sport, t1, t2, o1, o2, od, hour = e
-    draw_btn = []
-    if od:
-        draw_btn = [InlineKeyboardButton(f"🤝 مساوی | {od}", callback_data=f"bettype_{eid}_draw_{od}")]
-
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(f"🏆 برد {t1} | ضریب {o1}", callback_data=f"bettype_{eid}_1_{o1}"),
         InlineKeyboardButton(f"🏆 برد {t2} | ضریب {o2}", callback_data=f"bettype_{eid}_2_{o2}"),
     )
-    if draw_btn:
-        kb.add(*draw_btn)
-
+    if od:
+        kb.add(InlineKeyboardButton(f"🤝 مساوی | ضریب {od}", callback_data=f"bettype_{eid}_draw_{od}"))
     bal = get_balance(call.from_user.id)
     bot.edit_message_text(
-        f"🏟 *{t1}* vs *{t2}*\n"
-        f"🏅 {sport} | ⏰ {hour}:00 تهران\n\n"
-        f"📈 ضریب {t1}: `{o1}`\n"
-        f"📈 ضریب {t2}: `{o2}`\n"
-        + (f"🤝 مساوی: `{od}`\n" if od else "") +
-        f"\n💰 موجودی شما: `{format_number(bal)}` تومان\n\nروی کدام تیم شرط می‌بندید؟",
-        call.message.chat.id, call.message.message_id,
-        parse_mode='Markdown', reply_markup=kb
+        f"🏟 *{t1}* vs *{t2}*\n🏅 {sport} | ⏰ {hour}:00 تهران\n\n"
+        f"📈 {t1}: `{o1}` | {t2}: `{o2}`" + (f" | مساوی: `{od}`" if od else "") +
+        f"\n\n💰 موجودی: `{fmt(bal)}` تومان\n\nروی کدام شرط می‌بندید؟",
+        call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=kb
     )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("bettype_"))
@@ -599,17 +531,11 @@ def bet_type_selected(call):
     eid = int(parts[1])
     btype = parts[2]
     odds = float(parts[3])
-
-    uid = call.from_user.id
-    bal = get_balance(uid)
-
+    bal = get_balance(call.from_user.id)
     bot.answer_callback_query(call.id)
-    msg = bot.send_message(
-        call.message.chat.id,
-        f"💰 مبلغ شرط را وارد کنید:\n*(موجودی: {format_number(bal)} تومان)*",
-        parse_mode='Markdown'
-    )
-    bot.register_next_step_handler(msg, place_bet_step, uid, eid, btype, odds)
+    msg = bot.send_message(call.message.chat.id,
+        f"💰 مبلغ شرط را وارد کنید:\n*(موجودی: {fmt(bal)} تومان)*", parse_mode='Markdown')
+    bot.register_next_step_handler(msg, place_bet_step, call.from_user.id, eid, btype, odds)
 
 def place_bet_step(msg, uid, eid, btype, odds):
     try:
@@ -618,11 +544,9 @@ def place_bet_step(msg, uid, eid, btype, odds):
             raise ValueError
     except:
         return bot.send_message(msg.chat.id, "❌ مبلغ نامعتبر است.")
-
     bal = get_balance(uid)
     if amount > bal:
-        return bot.send_message(msg.chat.id, f"❌ موجودی کافی ندارید. موجودی: {format_number(bal)} تومان")
-
+        return bot.send_message(msg.chat.id, f"❌ موجودی کافی ندارید. موجودی: {fmt(bal)} تومان")
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, uid))
@@ -631,16 +555,12 @@ def place_bet_step(msg, uid, eid, btype, odds):
     conn.commit()
     cur.close()
     conn.close()
-
     prize = int(amount * odds)
-    bot.send_message(
-        msg.chat.id,
+    bot.send_message(msg.chat.id,
         f"✅ *پیش‌بینی شما با موفقیت ثبت شد!*\n\n"
-        f"💰 مبلغ شرط: `{format_number(amount)}` تومان\n"
-        f"⚖️ ضریب: `{odds}`\n"
-        f"🏆 سود احتمالی: `{format_number(prize - amount)}` تومان",
-        parse_mode='Markdown'
-    )
+        f"💰 مبلغ: `{fmt(amount)}` تومان | ⚖️ ضریب: `{odds}`\n"
+        f"🏆 سود احتمالی: `{fmt(prize - amount)}` تومان",
+        parse_mode='Markdown')
 
 # ==================== شرط‌های من ====================
 @bot.message_handler(func=lambda m: m.text == "📜 شرط‌های من")
@@ -657,15 +577,12 @@ def my_bets(msg):
     bets = cur.fetchall()
     cur.close()
     conn.close()
-
     if not bets:
         return bot.send_message(msg.chat.id, "❌ شرطی ثبت نکرده‌اید.")
-
-    status_map = {"pending": "⏳", "won": "✅", "lost": "❌"}
+    sm = {"pending": "⏳", "won": "✅", "lost": "❌"}
     txt = "📜 *شرط‌های شما:*\n\n"
     for b in bets:
-        st = status_map.get(b[6], "❓")
-        txt += f"{st} #{b[0]} | {b[1]} vs {b[2]}\n   انتخاب: {b[3]} | {format_number(b[4])} تومان | ضریب {b[5]}\n\n"
+        txt += f"{sm.get(b[6],'❓')} #{b[0]} | {b[1]} vs {b[2]}\n   {b[3]} | {fmt(b[4])} تومان | ضریب {b[5]}\n\n"
     bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
 # ==================== رتبه‌بندی ====================
@@ -682,7 +599,7 @@ def leaderboard(msg):
     for i, u in enumerate(users):
         m = medals[i] if i < 3 else f"{i+1}."
         name = u[0] or u[1] or "ناشناس"
-        txt += f"{m} {name} | `{format_number(u[2])}` تومان\n"
+        txt += f"{m} {name} | `{fmt(u[2])}` تومان\n"
     bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
 # ==================== آمار کلی ====================
@@ -691,59 +608,45 @@ def stats(msg):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*), COALESCE(SUM(total_deposit),0), COALESCE(SUM(total_won),0), COALESCE(SUM(total_lost),0) FROM users")
-    r = cur.fetchone()
+    count, deposits, won, lost = cur.fetchone()
     cur.close()
     conn.close()
-    count, deposits, won, lost = r
     net = lost - won
-    bot.send_message(
-        msg.chat.id,
-        f"📊 *آمار کلی ربات:*\n\n"
-        f"👥 تعداد کاربران: `{count}`\n"
-        f"📥 مجموع واریزها: `{format_number(deposits)}` تومان\n"
-        f"🏆 برد کاربران: `{format_number(won)}` تومان\n"
-        f"💸 ضرر کاربران: `{format_number(lost)}` تومان\n"
-        f"📈 برآیند ربات: `{format_number(net)}` تومان",
-        parse_mode='Markdown'
-    )
+    bot.send_message(msg.chat.id,
+        f"📊 *آمار کلی:*\n\n👥 کاربران: `{count}`\n📥 مجموع واریز: `{fmt(deposits)}` تومان\n"
+        f"🏆 برد کاربران: `{fmt(won)}` تومان\n💸 ضرر کاربران: `{fmt(lost)}` تومان\n"
+        f"📈 برآیند ربات: `{fmt(net)}` تومان", parse_mode='Markdown')
 
 # ==================== لیست کاربران ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "👥 لیست کاربران")
 def list_users(msg):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, username, first_name, balance, total_won, total_lost, joined_at
-        FROM users ORDER BY joined_at DESC
-    """)
+    cur.execute("SELECT user_id, username, first_name, balance, total_won, total_lost, joined_at FROM users ORDER BY joined_at DESC")
     users = cur.fetchall()
     cur.close()
     conn.close()
-
     if not users:
         return bot.send_message(msg.chat.id, "❌ کاربری وجود ندارد.")
-
     CHUNK = 15
     for i in range(0, len(users), CHUNK):
         chunk = users[i:i+CHUNK]
         txt = f"👥 *کاربران ({i+1}-{i+len(chunk)}):*\n\n"
         for u in chunk:
-            uid, uname, fname, bal, won, lost, joined = u
+            uid2, uname, fname, bal, won, lost, joined = u
             net = won - lost
-            net_sign = "+" if net >= 0 else ""
-            win_total = won + lost
-            win_pct = f"{(won/win_total*100):.0f}%" if win_total > 0 else "0%"
-            txt += (
-                f"👤 `{uid}` | @{uname or '—'} | {fname or '—'}\n"
-                f"   💰 {format_number(bal)} | 🏆 {win_pct} | برآیند: {net_sign}{format_number(net)}\n"
-                f"   📅 {joined.strftime('%Y-%m-%d') if joined else '—'}\n\n"
-            )
+            ns = "+" if net >= 0 else ""
+            wt = won + lost
+            wp = f"{(won/wt*100):.0f}%" if wt > 0 else "0%"
+            txt += (f"👤 `{uid2}` | @{uname or '—'} | {fname or '—'}\n"
+                    f"   💰 {fmt(bal)} | 🏆 {wp} | {ns}{fmt(net)}\n"
+                    f"   📅 {joined.strftime('%Y-%m-%d') if joined else '—'}\n\n")
         bot.send_message(msg.chat.id, txt, parse_mode='Markdown')
 
 # ==================== سرچ کاربر ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔍 سرچ کاربر")
 def search_user_prompt(msg):
-    m = bot.send_message(msg.chat.id, "🔍 آیدی عددی کاربر را وارد کنید:")
+    m = bot.send_message(msg.chat.id, "🔍 آیدی عددی کاربر:")
     bot.register_next_step_handler(m, search_user_step)
 
 def search_user_step(msg):
@@ -751,7 +654,6 @@ def search_user_step(msg):
         uid = int(msg.text.strip())
     except:
         return bot.send_message(msg.chat.id, "❌ آیدی نامعتبر.")
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT user_id, username, first_name, balance, total_deposit, total_won, total_lost, is_banned, joined_at FROM users WHERE user_id=%s", (uid,))
@@ -762,44 +664,27 @@ def search_user_step(msg):
     total_bets = cur.fetchone()[0]
     cur.close()
     conn.close()
-
     if not u:
         return bot.send_message(msg.chat.id, "❌ کاربر یافت نشد.")
-
     uid2, uname, fname, bal, deposit, won, lost, banned, joined = u
     net = won - lost
-    net_sign = "+" if net >= 0 else ""
-    win_pct = f"{(wins/total_bets*100):.0f}%" if total_bets > 0 else "0%"
-
+    ns = "+" if net >= 0 else ""
+    wp = f"{(wins/total_bets*100):.0f}%" if total_bets > 0 else "0%"
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("💰 افزایش/کاهش موجودی", callback_data=f"editbal_{uid2}"))
-
-    bot.send_message(
-        msg.chat.id,
-        f"🔍 *اطلاعات کاربر:*\n\n"
-        f"🆔 آیدی: `{uid2}`\n"
-        f"👤 نام: {fname or '—'}\n"
-        f"🔗 یوزرنیم: @{uname or '—'}\n"
-        f"💰 موجودی: `{format_number(bal)}` تومان\n"
-        f"📥 مجموع واریز: `{format_number(deposit)}` تومان\n"
-        f"🏆 برد: `{format_number(won)}` | ضرر: `{format_number(lost)}`\n"
-        f"📈 برآیند: `{net_sign}{format_number(net)}` تومان\n"
-        f"🎯 درصد برد: {win_pct} ({wins}/{total_bets})\n"
-        f"🚫 بن: {'بله' if banned else 'خیر'}\n"
-        f"📅 عضویت: {joined.strftime('%Y-%m-%d') if joined else '—'}",
-        parse_mode='Markdown',
-        reply_markup=kb
-    )
+    bot.send_message(msg.chat.id,
+        f"🔍 *اطلاعات کاربر:*\n\n🆔 `{uid2}`\n👤 {fname or '—'} | @{uname or '—'}\n"
+        f"💰 موجودی: `{fmt(bal)}` تومان\n📥 واریز کل: `{fmt(deposit)}` تومان\n"
+        f"🏆 برد: `{fmt(won)}` | ضرر: `{fmt(lost)}`\n"
+        f"📈 برآیند: `{ns}{fmt(net)}` تومان\n🎯 درصد برد: {wp} ({wins}/{total_bets})\n"
+        f"🚫 بن: {'بله' if banned else 'خیر'}\n📅 {joined.strftime('%Y-%m-%d') if joined else '—'}",
+        parse_mode='Markdown', reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("editbal_"))
 def editbal_prompt(call):
     uid = int(call.data.split("_")[1])
     msg = bot.send_message(call.message.chat.id,
-        f"💰 مقدار تغییر موجودی کاربر `{uid}` را وارد کنید:\n"
-        f"• برای افزایش: `+300`\n"
-        f"• برای کاهش: `300`",
-        parse_mode='Markdown'
-    )
+        f"💰 تغییر موجودی `{uid}`:\n`+300` برای افزایش\n`300` برای کاهش", parse_mode='Markdown')
     bot.register_next_step_handler(msg, editbal_step, uid)
 
 def editbal_step(msg, uid):
@@ -810,31 +695,27 @@ def editbal_step(msg, uid):
             conn = get_db()
             cur = conn.cursor()
             cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
-            conn.commit()
-            cur.close()
-            conn.close()
-            bot.send_message(msg.chat.id, f"✅ `{format_number(amount)}` تومان به موجودی `{uid}` افزوده شد.", parse_mode='Markdown')
+            conn.commit(); cur.close(); conn.close()
+            bot.send_message(msg.chat.id, f"✅ `{fmt(amount)}` تومان افزوده شد.", parse_mode='Markdown')
         else:
             amount = int(text)
             conn = get_db()
             cur = conn.cursor()
             cur.execute("UPDATE users SET balance=GREATEST(0,balance-%s) WHERE user_id=%s", (amount, uid))
-            conn.commit()
-            cur.close()
-            conn.close()
-            bot.send_message(msg.chat.id, f"✅ `{format_number(amount)}` تومان از موجودی `{uid}` کسر شد.", parse_mode='Markdown')
+            conn.commit(); cur.close(); conn.close()
+            bot.send_message(msg.chat.id, f"✅ `{fmt(amount)}` تومان کسر شد.", parse_mode='Markdown')
     except:
         bot.send_message(msg.chat.id, "❌ مقدار نامعتبر.")
 
 # ==================== بن/آن‌بن ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🚫 بن کاربر")
 def ban_prompt(msg):
-    m = bot.send_message(msg.chat.id, "🚫 آیدی عددی کاربر برای بن:")
+    m = bot.send_message(msg.chat.id, "🚫 آیدی عددی کاربر:")
     bot.register_next_step_handler(m, ban_step, True)
 
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "✅ آن‌بن کاربر")
 def unban_prompt(msg):
-    m = bot.send_message(msg.chat.id, "✅ آیدی عددی کاربر برای آن‌بن:")
+    m = bot.send_message(msg.chat.id, "✅ آیدی عددی کاربر:")
     bot.register_next_step_handler(m, ban_step, False)
 
 def ban_step(msg, do_ban):
@@ -845,16 +726,13 @@ def ban_step(msg, do_ban):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET is_banned=%s WHERE user_id=%s", (do_ban, uid))
-    conn.commit()
-    cur.close()
-    conn.close()
+    conn.commit(); cur.close(); conn.close()
     action = "بن" if do_ban else "آن‌بن"
     bot.send_message(msg.chat.id, f"✅ کاربر `{uid}` {action} شد.", parse_mode='Markdown')
     if do_ban:
         try:
-            bot.send_message(uid, "🚫 حساب شما توسط ادمین مسدود شده است.")
-        except:
-            pass
+            bot.send_message(uid, "🚫 حساب شما مسدود شده است.")
+        except: pass
 
 # ==================== خاموش/روشن ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔴 خاموش کردن بات")
@@ -869,7 +747,7 @@ def bot_on(msg):
     bot_active = True
     bot.send_message(msg.chat.id, "🟢 ربات برای کاربران روشن شد.", reply_markup=admin_menu())
 
-# ==================== پخش پیام همگانی ====================
+# ==================== پخش پیام ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "📢 پخش پیام همگانی")
 def broadcast_prompt(msg):
     m = bot.send_message(msg.chat.id, "📢 متن پیام را ارسال کنید:")
@@ -877,43 +755,33 @@ def broadcast_prompt(msg):
 
 def broadcast_confirm_step(msg):
     text = msg.text
+    bot._broadcast_pending = text
     kb = InlineKeyboardMarkup()
     kb.add(
-        InlineKeyboardButton("✅ ارسال", callback_data=f"broadcast_yes"),
+        InlineKeyboardButton("✅ ارسال", callback_data="broadcast_yes"),
         InlineKeyboardButton("❌ لغو", callback_data="broadcast_no")
     )
-    bot.send_message(
-        msg.chat.id,
-        f"📢 *متن پیام:*\n\n{text}\n\n✅ مطمئن هستید این پیام ارسال شود؟",
-        parse_mode='Markdown',
-        reply_markup=kb
-    )
-    bot.register_next_step_handler_by_chat_id(msg.chat.id, lambda m: None)
-    # ذخیره متن در context
-    bot.message_handlers_head = getattr(bot, 'message_handlers_head', {})
-    bot._broadcast_pending = text
+    bot.send_message(msg.chat.id,
+        f"📢 *پیش‌نمایش:*\n\n{text}\n\n✅ مطمئن هستید؟",
+        parse_mode='Markdown', reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data == "broadcast_yes")
 def broadcast_send(call):
     text = getattr(bot, '_broadcast_pending', None)
     if not text:
         return bot.answer_callback_query(call.id, "❌ متنی یافت نشد.")
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT user_id FROM users")
     users = cur.fetchall()
     cur.close()
     conn.close()
-
     success = 0
     for u in users:
         try:
             bot.send_message(u[0], text)
             success += 1
-        except:
-            pass
-
+        except: pass
     bot.edit_message_text(f"✅ پیام به {success} کاربر ارسال شد.", call.message.chat.id, call.message.message_id)
     bot._broadcast_pending = None
 
@@ -922,7 +790,7 @@ def broadcast_cancel(call):
     bot.edit_message_text("❌ ارسال لغو شد.", call.message.chat.id, call.message.message_id)
     bot._broadcast_pending = None
 
-# ==================== منوی اصلی (ادمین) ====================
+# ==================== منوی اصلی ادمین ====================
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔙 منوی اصلی")
 def back_to_admin(msg):
     bot.send_message(msg.chat.id, "👑 پنل مدیریت", reply_markup=admin_menu())
@@ -944,6 +812,5 @@ def fallback(msg):
 print("🚀 ربات پیش‌بینی شروع شد...")
 try:
     bot.remove_webhook()
-except:
-    pass
+except: pass
 bot.infinity_polling(skip_pending=True, none_stop=True)
