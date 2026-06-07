@@ -681,52 +681,78 @@ import math
 CRASH_RULES = """
 🚀 *قوانین بازی انفجار:*
 
-• مبلغ شرط خود را وارد کنید
-• یک ضریب از 0.01x شروع به بالا رفتن می‌کند
-• هر لحظه می‌توانید برداشت کنید
-• اگر قبل از انفجار برداشت کنید، به همان نسبت سود می‌کنید
-• مثال: ۵ TRX در ضریب 1.20x = دریافت ۶ TRX
-• اگر منفجر شود، مبلغ شرط از دست می‌رود!
-• ضریب انفجار کاملاً تصادفی است و هر عددی می‌تواند باشد
-• هیچ تضمینی برای زمان انفجار وجود ندارد
+۱. مبلغ شرط خود را وارد کنید
+۲. ضریب از 1.00x شروع به بالا رفتن می‌کند (1.10x، 1.50x، 2.00x، 5.00x و...)
+۳. باید قبل از اینکه بازی «منفجر» شود دکمه برداشت را بزنید
+۴. اگر قبل از انفجار برداشت کنید، پولتان در ضریب فعلی ضرب می‌شود
+   مثال: ۵ TRX در ضریب 2.00x = دریافت ۱۰ TRX
+۵. اگر انفجار قبل از برداشت اتفاق بیفتد، کل مبلغ آن دور را از دست می‌دهید
+۶. ضریب انفجار کاملاً تصادفی است
 
 ⚠️ *مسئولیت هر شرط با خود کاربر است.*
 """
 
-def get_crash_multiplier(is_new_player=False):
+def get_user_game_count(uid):
+    """تعداد کل بازی‌های انفجار کاربر"""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM crash_bets WHERE user_id=%s", (uid,))
+        count = cur.fetchone()[0]
+        cur.close(); conn.close()
+        return count
+    except:
+        return 0
+
+def get_crash_multiplier(uid=None):
     """
-    محاسبه ضریب انفجار
-    - سیستم طوری طراحی شده که ربات سود کنه (house edge ~15%)
-    - بازیکن جدید: احتمال بالاتر برای ضریب 2-3x
+    سیستم house edge پویا:
+    - بازی ۱-۵: احتمال بیشتر برای ضریب ۲-۴x (ترغیب کاربر جدید)
+    - بازی ۶-۲۰: house edge متوسط
+    - بازی ۲۱+: house edge بالاتر (برآیند کلی منفی برای کاربر)
+    در همه حالت‌ها ضرایب بزرگ ممکن است رخ دهند ولی با احتمال کمتر
     """
+    game_count = get_user_game_count(uid) if uid else 0
     r = random.random()
-    
-    if is_new_player:
-        # بازیکن جدید: احتمال 40% برای ضریب 2-3x
-        if r < 0.15:
-            return round(random.uniform(0.10, 0.80), 2)
-        elif r < 0.55:  # 40% احتمال ضریب خوب
-            return round(random.uniform(2.0, 3.5), 2)
-        elif r < 0.75:
-            return round(random.uniform(1.2, 2.0), 2)
-        elif r < 0.90:
-            return round(random.uniform(3.5, 8.0), 2)
+
+    if game_count < 5:
+        # تازه‌کار: جذاب‌تر
+        if r < 0.10:
+            return round(random.uniform(1.00, 1.30), 2)
+        elif r < 0.30:
+            return round(random.uniform(1.30, 2.00), 2)
+        elif r < 0.65:
+            return round(random.uniform(2.00, 4.00), 2)
+        elif r < 0.85:
+            return round(random.uniform(4.00, 8.00), 2)
         else:
-            return round(random.uniform(8.0, 25.0), 2)
-    else:
-        # بازیکن عادی: house edge بالاتر
-        if r < 0.30:
-            return round(random.uniform(0.10, 0.90), 2)
+            return round(random.uniform(8.00, 30.00), 2)
+
+    elif game_count < 20:
+        # متوسط: house edge ~20%
+        if r < 0.25:
+            return round(random.uniform(1.00, 1.30), 2)
         elif r < 0.55:
-            return round(random.uniform(0.90, 1.5), 2)
+            return round(random.uniform(1.30, 2.00), 2)
         elif r < 0.75:
-            return round(random.uniform(1.5, 2.5), 2)
-        elif r < 0.88:
-            return round(random.uniform(2.5, 5.0), 2)
-        elif r < 0.96:
-            return round(random.uniform(5.0, 15.0), 2)
+            return round(random.uniform(2.00, 3.50), 2)
+        elif r < 0.90:
+            return round(random.uniform(3.50, 7.00), 2)
         else:
-            return round(random.uniform(15.0, 50.0), 2)
+            return round(random.uniform(7.00, 25.00), 2)
+
+    else:
+        # کاربر قدیمی: house edge ~35%
+        if r < 0.38:
+            return round(random.uniform(1.00, 1.30), 2)
+        elif r < 0.65:
+            return round(random.uniform(1.30, 1.80), 2)
+        elif r < 0.82:
+            return round(random.uniform(1.80, 3.00), 2)
+        elif r < 0.93:
+            return round(random.uniform(3.00, 6.00), 2)
+        else:
+            return round(random.uniform(6.00, 20.00), 2)
 
 # نگه‌داری session بازی‌های فعال
 active_crash_games = {}  # {chat_id: {amount, multiplier, msg_id, cashed_out, amount_units}}
@@ -738,14 +764,6 @@ def has_accepted_rules(uid):
     r = cur.fetchone()
     cur.close(); conn.close()
     return r is not None
-
-def is_new_crash_player(uid):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM bets WHERE user_id=%s", (uid,))
-    count = cur.fetchone()[0]
-    cur.close(); conn.close()
-    return count == 0
 
 def crash_game_start(msg):
     ensure_user(msg.from_user)
@@ -806,8 +824,10 @@ def crash_receive_amount(msg, uid):
     conn.commit(); cur.close(); conn.close()
     
     # تعیین ضریب انفجار (مخفی از کاربر)
-    new_player = is_new_crash_player(uid)
-    crash_at = get_crash_multiplier(is_new_player=new_player)
+    crash_at = get_crash_multiplier(uid=uid)
+    # ضریب انفجار حداقل 1.01 باشه (بازی حداقل یه لحظه اجرا بشه)
+    if crash_at < 1.01:
+        crash_at = round(random.uniform(1.01, 1.25), 2)
     
     # پیام شمارش معکوس
     countdown_msg = bot.send_message(msg.chat.id,
@@ -832,7 +852,7 @@ def crash_receive_amount(msg, uid):
     game_msg = bot.send_message(msg.chat.id,
         f"🚀 *بازی انفجار*\n\n"
         f"💵 شرط: `{amount_trx}` TRX\n\n"
-        f"📈 ضریب: `0.01x`\n\n"
+        f"📈 ضریب: `1.00x`\n\n"
         f"⚡ برداشت کنید قبل از انفجار!",
         parse_mode='Markdown', reply_markup=kb)
     
@@ -844,7 +864,7 @@ def crash_receive_amount(msg, uid):
         'crash_at': crash_at,
         'msg_id': game_msg.message_id,
         'cashed_out': False,
-        'current': 0.0
+        'current': 1.00
     }
     
     # اجرای بازی در thread جداگانه
@@ -933,9 +953,9 @@ def crash_cashout(call):
     if game.get('cashed_out'):
         return bot.answer_callback_query(call.id, "قبلاً برداشت کردید!", show_alert=True)
 
-    current = game.get('current', 0.01)
-    if current <= 0:
-        current = 0.01
+    current = game.get('current', 1.00)
+    if current < 1.00:
+        current = 1.00
 
     amount_trx = game['amount_trx']
     amount_units = game['amount_units']
