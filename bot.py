@@ -98,6 +98,18 @@ def init_db():
             accepted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS crash_bets (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            amount INTEGER,
+            crash_at FLOAT,
+            cashout_at FLOAT,
+            prize INTEGER,
+            result TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     cur.execute("""
         ALTER TABLE events ADD COLUMN IF NOT EXISTS match_minute INTEGER NOT NULL DEFAULT 0
     """)
@@ -874,6 +886,10 @@ def run_crash_game(chat_id, amount_trx, amount_units, crash_at, msg_id, uid):
                 conn = get_db()
                 cur = conn.cursor()
                 cur.execute("UPDATE users SET total_lost=total_lost+%s WHERE user_id=%s", (amount_units, uid))
+                cur.execute(
+                    "INSERT INTO crash_bets (user_id, amount, crash_at, cashout_at, prize, result) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (uid, amount_units, crash_at, crash_at, 0, 'lost')
+                )
                 conn.commit(); cur.close(); conn.close()
             except: pass
             return
@@ -909,53 +925,65 @@ def run_crash_game(chat_id, amount_trx, amount_units, crash_at, msg_id, uid):
 def crash_cashout(call):
     chat_id = int(call.data.split("_")[2])
     uid = call.from_user.id
-    
+
     if chat_id not in active_crash_games:
         return bot.answer_callback_query(call.id, "❌ بازی تمام شده!", show_alert=True)
-    
+
     game = active_crash_games[chat_id]
     if game.get('cashed_out'):
         return bot.answer_callback_query(call.id, "قبلاً برداشت کردید!", show_alert=True)
-    
-    current = game['current']
+
+    current = game.get('current', 0.01)
+    if current <= 0:
+        current = 0.01
+
     amount_trx = game['amount_trx']
     amount_units = game['amount_units']
     crash_at = game['crash_at']
-    
-    if current <= 0:
-        return bot.answer_callback_query(call.id, "⏳ صبر کنید...", show_alert=True)
-    
-    # علامت‌گذاری برداشت
+    msg_id = game['msg_id']
+
+    # علامت‌گذاری برداشت - قبل از هر چیز تا thread متوقف بشه
     active_crash_games[chat_id]['cashed_out'] = True
     active_crash_games.pop(chat_id, None)
-    
+
     prize_trx = round(amount_trx * current, 2)
     prize_units = int(prize_trx * 100)
-    profit_units = prize_units - amount_units  # میتونه منفی باشه اگه زیر 1x برداشت شد
-    
-    # واریز برنده
+    profit = round(prize_trx - amount_trx, 2)
+    profit_units = prize_units - amount_units
+
+    # واریز موجودی
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET balance=balance+%s, total_won=total_won+%s WHERE user_id=%s",
                 (prize_units, max(0, profit_units), uid))
+    # ثبت در crash_bets
+    cur.execute(
+        "INSERT INTO crash_bets (user_id, amount, crash_at, cashout_at, prize, result) VALUES (%s,%s,%s,%s,%s,%s)",
+        (uid, amount_units, crash_at, current, prize_units, 'won')
+    )
     conn.commit(); cur.close(); conn.close()
-    
-    bot.answer_callback_query(call.id, f"✅ برداشت موفق! {prize_trx} TRX")
-    
+
+    bot.answer_callback_query(call.id, f"✅ برداشت! {prize_trx} TRX")
+
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"))
-    profit = round(prize_trx - amount_trx, 2)
-    result_emoji = "🎉" if profit >= 0 else "📉"
-    result_text = f"سود: `+{profit}` TRX" if profit >= 0 else f"ضرر: `{profit}` TRX"
+
+    if profit >= 0:
+        result_line = f"💰 سود: `+{profit}` TRX"
+        footer = "🎉 تبریک! عالی بود!"
+    else:
+        result_line = f"📉 ضرر: `{profit}` TRX"
+        footer = "دفعه بعد بهتر!"
+
     try:
         bot.edit_message_text(
             f"✅ *برداشت موفق!*\n\n"
             f"📈 ضریب برداشت: `{current:.2f}x`\n"
             f"💵 شرط: `{amount_trx}` TRX\n"
             f"🏆 دریافتی: `{prize_trx}` TRX\n"
-            f"{result_text}\n\n"
-            f"{result_emoji} {'تبریک! عالی بود!' if profit >= 0 else 'دفعه بعد بهتر!'}",
-            chat_id, game['msg_id'], parse_mode='Markdown', reply_markup=kb
+            f"{result_line}\n\n"
+            f"{footer}",
+            chat_id, msg_id, parse_mode='Markdown', reply_markup=kb
         )
     except: pass
 
@@ -1236,16 +1264,50 @@ def search_user_step(msg):
         return bot.send_message(msg.chat.id, "❌ کاربر یافت نشد.")
     uid2, uname, fname, bal, deposit, won, lost, banned, joined = u
     net = won - lost
-    ns = "+" if net >= 0 else ""
+    if net > 0:
+        net_str = f"+{net/100:.2f}"
+    elif net < 0:
+        net_str = f"-{abs(net)/100:.2f}"
+    else:
+        net_str = "0.00"
     wp = f"{(wins/total_bets*100):.0f}%" if total_bets > 0 else "0%"
+
+    # آمار انفجار
+    cur2 = get_db().cursor()
+    conn2 = get_db()
+    cur2 = conn2.cursor()
+    cur2.execute("SELECT COUNT(*), COALESCE(SUM(prize),0), COALESCE(SUM(amount),0) FROM crash_bets WHERE user_id=%s AND result='won'", (uid2,))
+    c_wins, c_won_sum, c_won_bet = cur2.fetchone()
+    cur2.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM crash_bets WHERE user_id=%s AND result='lost'", (uid2,))
+    c_losses, c_lost_sum = cur2.fetchone()
+    cur2.close(); conn2.close()
+    c_total = c_wins + c_losses
+    c_wp = f"{(c_wins/c_total*100):.0f}%" if c_total > 0 else "0%"
+    c_profit = (c_won_sum - c_won_bet) - c_lost_sum
+    if c_profit > 0:
+        c_net_str = f"+{c_profit/100:.2f}"
+    elif c_profit < 0:
+        c_net_str = f"-{abs(c_profit)/100:.2f}"
+    else:
+        c_net_str = "0.00"
+
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("💰 افزایش/کاهش موجودی", callback_data=f"editbal_{uid2}"))
     bot.send_message(msg.chat.id,
-        f"🔍 *اطلاعات کاربر:*\n\n🆔 `{uid2}`\n👤 {fname or '—'} | @{uname or '—'}\n"
-        f"💰 موجودی: `{bal/100:.2f}` TRX\n📥 واریز کل: `{deposit/100:.2f}` TRX\n"
+        f"🔍 *اطلاعات کاربر:*\n\n"
+        f"🆔 `{uid2}`\n👤 {fname or '—'} | @{uname or '—'}\n"
+        f"💰 موجودی: `{bal/100:.2f}` TRX\n"
+        f"📥 واریز کل: `{deposit/100:.2f}` TRX\n\n"
+        f"*📊 آمار پیش‌بینی:*\n"
         f"🏆 برد: `{won/100:.2f}` TRX | ضرر: `{lost/100:.2f}` TRX\n"
-        f"📈 برآیند: `{ns}{abs(net)/100:.2f}` TRX\n🎯 درصد برد: {wp} ({wins}/{total_bets})\n"
-        f"🚫 بن: {'بله' if banned else 'خیر'}\n📅 {joined.strftime('%Y-%m-%d') if joined else '—'}",
+        f"📈 برآیند: `{net_str}` TRX\n"
+        f"🎯 درصد برد: {wp} ({wins}/{total_bets})\n\n"
+        f"*💥 آمار انفجار:*\n"
+        f"✅ برد: {c_wins} بار | ❌ باخت: {c_losses} بار\n"
+        f"🎯 درصد برد: {c_wp} ({c_wins}/{c_total})\n"
+        f"📈 برآیند: `{c_net_str}` TRX\n\n"
+        f"🚫 بن: {'بله' if banned else 'خیر'}\n"
+        f"📅 عضویت: {joined.strftime('%Y-%m-%d') if joined else '—'}",
         parse_mode='Markdown', reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("editbal_"))
