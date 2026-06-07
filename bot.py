@@ -670,11 +670,12 @@ CRASH_RULES = """
 🚀 *قوانین بازی انفجار:*
 
 • مبلغ شرط خود را وارد کنید
-• یک ضریب از 0.00x شروع به بالا رفتن می‌کند
+• یک ضریب از 0.01x شروع به بالا رفتن می‌کند
 • هر لحظه می‌توانید برداشت کنید
-• اگر قبل از انفجار برداشت کنید، سود می‌کنید
+• اگر قبل از انفجار برداشت کنید، به همان نسبت سود می‌کنید
+• مثال: ۵ TRX در ضریب 1.20x = دریافت ۶ TRX
 • اگر منفجر شود، مبلغ شرط از دست می‌رود!
-• ضریب ممکن است روی 0.22x یا 40x متوقف شود
+• ضریب انفجار کاملاً تصادفی است و هر عددی می‌تواند باشد
 • هیچ تضمینی برای زمان انفجار وجود ندارد
 
 ⚠️ *مسئولیت هر شرط با خود کاربر است.*
@@ -745,8 +746,7 @@ def crash_game_start(msg):
     if not has_accepted_rules(uid):
         kb = InlineKeyboardMarkup()
         kb.add(
-            InlineKeyboardButton("✅ قوانین را می‌پذیرم", callback_data="crash_accept"),
-            InlineKeyboardButton("🔙 بازگشت به منو", callback_data="crash_back")
+            InlineKeyboardButton("✅ قوانین را می‌پذیرم", callback_data="crash_accept")
         )
         bot.send_message(msg.chat.id, CRASH_RULES, parse_mode='Markdown', reply_markup=kb)
     else:
@@ -761,11 +761,6 @@ def crash_accept(call):
     conn.commit(); cur.close(); conn.close()
     bot.edit_message_text("✅ قوانین پذیرفته شد!", call.message.chat.id, call.message.message_id)
     crash_ask_amount(call.message.chat.id, uid)
-
-@bot.callback_query_handler(func=lambda c: c.data == "crash_back")
-def crash_back(call):
-    bot.edit_message_text("🔙 به منو بازگشتید.", call.message.chat.id, call.message.message_id)
-    bot.send_message(call.message.chat.id, "منوی اصلی:", reply_markup=main_menu())
 
 def crash_ask_amount(chat_id, uid):
     bal = get_balance(uid)
@@ -825,7 +820,7 @@ def crash_receive_amount(msg, uid):
     game_msg = bot.send_message(msg.chat.id,
         f"🚀 *بازی انفجار*\n\n"
         f"💵 شرط: `{amount_trx}` TRX\n\n"
-        f"📈 ضریب: `0.00x`\n\n"
+        f"📈 ضریب: `0.01x`\n\n"
         f"⚡ برداشت کنید قبل از انفجار!",
         parse_mode='Markdown', reply_markup=kb)
     
@@ -866,10 +861,7 @@ def run_crash_game(chat_id, amount_trx, amount_units, crash_at, msg_id, uid):
             # حذف session
             active_crash_games.pop(chat_id, None)
             kb = InlineKeyboardMarkup()
-            kb.add(
-                InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"),
-                InlineKeyboardButton("🔙 منو", callback_data="crash_back")
-            )
+            kb.add(InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"))
             try:
                 bot.edit_message_text(
                     f"💥 *انفجار!*\n\n"
@@ -939,7 +931,7 @@ def crash_cashout(call):
     
     prize_trx = round(amount_trx * current, 2)
     prize_units = int(prize_trx * 100)
-    profit_units = prize_units - amount_units
+    profit_units = prize_units - amount_units  # میتونه منفی باشه اگه زیر 1x برداشت شد
     
     # واریز برنده
     conn = get_db()
@@ -951,18 +943,18 @@ def crash_cashout(call):
     bot.answer_callback_query(call.id, f"✅ برداشت موفق! {prize_trx} TRX")
     
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"),
-        InlineKeyboardButton("🔙 منو", callback_data="crash_back")
-    )
+    kb.add(InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"))
+    profit = round(prize_trx - amount_trx, 2)
+    result_emoji = "🎉" if profit >= 0 else "📉"
+    result_text = f"سود: `+{profit}` TRX" if profit >= 0 else f"ضرر: `{profit}` TRX"
     try:
         bot.edit_message_text(
             f"✅ *برداشت موفق!*\n\n"
             f"📈 ضریب برداشت: `{current:.2f}x`\n"
             f"💵 شرط: `{amount_trx}` TRX\n"
             f"🏆 دریافتی: `{prize_trx}` TRX\n"
-            f"💰 سود: `{round(prize_trx - amount_trx, 2)}` TRX\n\n"
-            f"🎉 تبریک! عالی بود!",
+            f"{result_text}\n\n"
+            f"{result_emoji} {'تبریک! عالی بود!' if profit >= 0 else 'دفعه بعد بهتر!'}",
             chat_id, game['msg_id'], parse_mode='Markdown', reply_markup=kb
         )
     except: pass
