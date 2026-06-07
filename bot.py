@@ -28,6 +28,7 @@ MENU_BUTTONS = {
     "🔙 منوی اصلی", "⚽ پیش‌بینی", "👜 کیف پول",
     "📜 شرط‌های من", "🏆 رتبه‌بندی",
     "🗑 مدیریت پیش‌بینی‌ها",
+    "🚀 بازی انفجار",
 }
 
 # ==================== دیتابیس ====================
@@ -91,6 +92,12 @@ def init_db():
         )
     ''')
     # اضافه کردن ستون‌های جدید اگه وجود نداشتن (migration)
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS crash_accepted (
+            user_id BIGINT PRIMARY KEY,
+            accepted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     cur.execute("""
         ALTER TABLE events ADD COLUMN IF NOT EXISTS match_minute INTEGER NOT NULL DEFAULT 0
     """)
@@ -177,6 +184,7 @@ def is_menu_button(text):
 # ==================== کیبوردها ====================
 def main_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.add(KeyboardButton("🚀 بازی انفجار"))
     kb.add(KeyboardButton("⚽ پیش‌بینی"), KeyboardButton("👜 کیف پول"))
     kb.add(KeyboardButton("📜 شرط‌های من"), KeyboardButton("🏆 رتبه‌بندی"))
     return kb
@@ -251,6 +259,8 @@ def dispatch_menu(msg):
         return my_bets(msg)
     if text == "🏆 رتبه‌بندی":
         return leaderboard(msg)
+    if text == "🚀 بازی انفجار":
+        return crash_game_start(msg)
 
     if uid != ADMIN_ID:
         return
@@ -650,6 +660,318 @@ def process_result(call):
     conn.commit(); cur.close(); conn.close()
     bot.edit_message_text(f"✅ نتیجه ثبت شد: *{result_label}*",
                           call.message.chat.id, call.message.message_id, parse_mode='Markdown')
+
+
+import random
+import math
+
+# ==================== بازی انفجار ====================
+CRASH_RULES = """
+🚀 *قوانین بازی انفجار:*
+
+• مبلغ شرط خود را وارد کنید
+• یک ضریب از 0.00x شروع به بالا رفتن می‌کند
+• هر لحظه می‌توانید برداشت کنید
+• اگر قبل از انفجار برداشت کنید، سود می‌کنید
+• اگر منفجر شود، مبلغ شرط از دست می‌رود!
+• ضریب ممکن است روی 0.22x یا 40x متوقف شود
+• هیچ تضمینی برای زمان انفجار وجود ندارد
+
+⚠️ *مسئولیت هر شرط با خود کاربر است.*
+"""
+
+def get_crash_multiplier(is_new_player=False):
+    """
+    محاسبه ضریب انفجار
+    - سیستم طوری طراحی شده که ربات سود کنه (house edge ~15%)
+    - بازیکن جدید: احتمال بالاتر برای ضریب 2-3x
+    """
+    r = random.random()
+    
+    if is_new_player:
+        # بازیکن جدید: احتمال 40% برای ضریب 2-3x
+        if r < 0.15:
+            return round(random.uniform(0.10, 0.80), 2)
+        elif r < 0.55:  # 40% احتمال ضریب خوب
+            return round(random.uniform(2.0, 3.5), 2)
+        elif r < 0.75:
+            return round(random.uniform(1.2, 2.0), 2)
+        elif r < 0.90:
+            return round(random.uniform(3.5, 8.0), 2)
+        else:
+            return round(random.uniform(8.0, 25.0), 2)
+    else:
+        # بازیکن عادی: house edge بالاتر
+        if r < 0.30:
+            return round(random.uniform(0.10, 0.90), 2)
+        elif r < 0.55:
+            return round(random.uniform(0.90, 1.5), 2)
+        elif r < 0.75:
+            return round(random.uniform(1.5, 2.5), 2)
+        elif r < 0.88:
+            return round(random.uniform(2.5, 5.0), 2)
+        elif r < 0.96:
+            return round(random.uniform(5.0, 15.0), 2)
+        else:
+            return round(random.uniform(15.0, 50.0), 2)
+
+# نگه‌داری session بازی‌های فعال
+active_crash_games = {}  # {chat_id: {amount, multiplier, msg_id, cashed_out, amount_units}}
+
+def has_accepted_rules(uid):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM crash_accepted WHERE user_id=%s", (uid,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return r is not None
+
+def is_new_crash_player(uid):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM bets WHERE user_id=%s", (uid,))
+    count = cur.fetchone()[0]
+    cur.close(); conn.close()
+    return count == 0
+
+def crash_game_start(msg):
+    ensure_user(msg.from_user)
+    uid = msg.from_user.id
+    if not bot_active and uid != ADMIN_ID:
+        return bot.send_message(msg.chat.id, "🔴 ربات در حال حاضر غیرفعال است.")
+    if is_banned(uid):
+        return bot.send_message(msg.chat.id, "🚫 حساب شما مسدود شده است.")
+    
+    if not has_accepted_rules(uid):
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("✅ قوانین را می‌پذیرم", callback_data="crash_accept"),
+            InlineKeyboardButton("🔙 بازگشت به منو", callback_data="crash_back")
+        )
+        bot.send_message(msg.chat.id, CRASH_RULES, parse_mode='Markdown', reply_markup=kb)
+    else:
+        crash_ask_amount(msg.chat.id, uid)
+
+@bot.callback_query_handler(func=lambda c: c.data == "crash_accept")
+def crash_accept(call):
+    uid = call.from_user.id
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO crash_accepted (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (uid,))
+    conn.commit(); cur.close(); conn.close()
+    bot.edit_message_text("✅ قوانین پذیرفته شد!", call.message.chat.id, call.message.message_id)
+    crash_ask_amount(call.message.chat.id, uid)
+
+@bot.callback_query_handler(func=lambda c: c.data == "crash_back")
+def crash_back(call):
+    bot.edit_message_text("🔙 به منو بازگشتید.", call.message.chat.id, call.message.message_id)
+    bot.send_message(call.message.chat.id, "منوی اصلی:", reply_markup=main_menu())
+
+def crash_ask_amount(chat_id, uid):
+    bal = get_balance(uid)
+    m = bot.send_message(chat_id,
+        f"🚀 *بازی انفجار*\n\n"
+        f"💰 موجودی: `{bal/100:.2f}` TRX\n\n"
+        f"مبلغ شرط (TRX) را وارد کنید:",
+        parse_mode='Markdown')
+    bot.register_next_step_handler(m, crash_receive_amount, uid)
+
+def crash_receive_amount(msg, uid):
+    if is_menu_button(msg.text or ""):
+        return dispatch_menu(msg)
+    try:
+        amount_trx = float((msg.text or "").strip())
+        if amount_trx <= 0:
+            raise ValueError
+        amount_units = int(amount_trx * 100)
+    except:
+        return bot.send_message(msg.chat.id, "❌ مقدار نامعتبر. دوباره امتحان کنید.")
+    
+    bal = get_balance(uid)
+    if amount_units > bal:
+        return bot.send_message(msg.chat.id,
+            f"❌ موجودی کافی ندارید.\nموجودی: `{bal/100:.2f}` TRX", parse_mode='Markdown')
+    
+    # کم کردن موجودی
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount_units, uid))
+    conn.commit(); cur.close(); conn.close()
+    
+    # تعیین ضریب انفجار (مخفی از کاربر)
+    new_player = is_new_crash_player(uid)
+    crash_at = get_crash_multiplier(is_new_player=new_player)
+    
+    # پیام شمارش معکوس
+    countdown_msg = bot.send_message(msg.chat.id,
+        f"🚀 بازی انفجار شروع می‌شود...\n\n⏳ *3*", parse_mode='Markdown')
+    
+    time_module.sleep(1)
+    try:
+        bot.edit_message_text("🚀 بازی انفجار شروع می‌شود...\n\n⏳ *2*",
+                              msg.chat.id, countdown_msg.message_id, parse_mode='Markdown')
+    except: pass
+    time_module.sleep(1)
+    try:
+        bot.edit_message_text("🚀 بازی انفجار شروع می‌شود...\n\n⏳ *1*",
+                              msg.chat.id, countdown_msg.message_id, parse_mode='Markdown')
+    except: pass
+    time_module.sleep(1)
+    
+    # شروع بازی
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("💰 برداشت", callback_data=f"crash_cashout_{msg.chat.id}"))
+    
+    game_msg = bot.send_message(msg.chat.id,
+        f"🚀 *بازی انفجار*\n\n"
+        f"💵 شرط: `{amount_trx}` TRX\n\n"
+        f"📈 ضریب: `0.00x`\n\n"
+        f"⚡ برداشت کنید قبل از انفجار!",
+        parse_mode='Markdown', reply_markup=kb)
+    
+    # ذخیره session
+    active_crash_games[msg.chat.id] = {
+        'uid': uid,
+        'amount_units': amount_units,
+        'amount_trx': amount_trx,
+        'crash_at': crash_at,
+        'msg_id': game_msg.message_id,
+        'cashed_out': False,
+        'current': 0.0
+    }
+    
+    # اجرای بازی در thread جداگانه
+    t = threading.Thread(target=run_crash_game, args=(msg.chat.id, amount_trx, amount_units, crash_at, game_msg.message_id, uid))
+    t.daemon = True
+    t.start()
+
+def run_crash_game(chat_id, amount_trx, amount_units, crash_at, msg_id, uid):
+    current = 0.00
+    step = 0.05
+    delay = 0.4
+    
+    while True:
+        current = round(current + step, 2)
+        
+        # آپدیت ضریب فعلی در session
+        if chat_id in active_crash_games:
+            active_crash_games[chat_id]['current'] = current
+        
+        # چک کردن اگه کاربر برداشت کرده
+        if chat_id in active_crash_games and active_crash_games[chat_id].get('cashed_out'):
+            return
+        
+        # انفجار!
+        if current >= crash_at:
+            # حذف session
+            active_crash_games.pop(chat_id, None)
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"),
+                InlineKeyboardButton("🔙 منو", callback_data="crash_back")
+            )
+            try:
+                bot.edit_message_text(
+                    f"💥 *انفجار!*\n\n"
+                    f"📈 ضریب نهایی: `{crash_at}x`\n"
+                    f"💵 شرط: `{amount_trx}` TRX\n\n"
+                    f"😔 متأسفانه شرط باختید!\nمی‌توانید جبران کنید 💪",
+                    chat_id, msg_id, parse_mode='Markdown', reply_markup=kb
+                )
+                # ثبت ضرر
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("UPDATE users SET total_lost=total_lost+%s WHERE user_id=%s", (amount_units, uid))
+                conn.commit(); cur.close(); conn.close()
+            except: pass
+            return
+        
+        # آپدیت پیام با ضریب جاری
+        # سرعت افزایش پس از هر مرحله
+        if current > 5:
+            step = 0.2
+            delay = 0.5
+        elif current > 2:
+            step = 0.1
+            delay = 0.4
+        elif current > 1:
+            step = 0.07
+            delay = 0.4
+        
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton(f"💰 برداشت ({round(amount_trx * current, 2)} TRX)", callback_data=f"crash_cashout_{chat_id}"))
+        
+        try:
+            bot.edit_message_text(
+                f"🚀 *بازی انفجار*\n\n"
+                f"💵 شرط: `{amount_trx}` TRX\n\n"
+                f"📈 ضریب: `{current:.2f}x`\n\n"
+                f"⚡ سریع برداشت کنید!",
+                chat_id, msg_id, parse_mode='Markdown', reply_markup=kb
+            )
+        except: pass
+        
+        time_module.sleep(delay)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("crash_cashout_"))
+def crash_cashout(call):
+    chat_id = int(call.data.split("_")[2])
+    uid = call.from_user.id
+    
+    if chat_id not in active_crash_games:
+        return bot.answer_callback_query(call.id, "❌ بازی تمام شده!", show_alert=True)
+    
+    game = active_crash_games[chat_id]
+    if game.get('cashed_out'):
+        return bot.answer_callback_query(call.id, "قبلاً برداشت کردید!", show_alert=True)
+    
+    current = game['current']
+    amount_trx = game['amount_trx']
+    amount_units = game['amount_units']
+    crash_at = game['crash_at']
+    
+    if current <= 0:
+        return bot.answer_callback_query(call.id, "⏳ صبر کنید...", show_alert=True)
+    
+    # علامت‌گذاری برداشت
+    active_crash_games[chat_id]['cashed_out'] = True
+    active_crash_games.pop(chat_id, None)
+    
+    prize_trx = round(amount_trx * current, 2)
+    prize_units = int(prize_trx * 100)
+    profit_units = prize_units - amount_units
+    
+    # واریز برنده
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET balance=balance+%s, total_won=total_won+%s WHERE user_id=%s",
+                (prize_units, max(0, profit_units), uid))
+    conn.commit(); cur.close(); conn.close()
+    
+    bot.answer_callback_query(call.id, f"✅ برداشت موفق! {prize_trx} TRX")
+    
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("🔄 شروع مجدد", callback_data="crash_restart"),
+        InlineKeyboardButton("🔙 منو", callback_data="crash_back")
+    )
+    try:
+        bot.edit_message_text(
+            f"✅ *برداشت موفق!*\n\n"
+            f"📈 ضریب برداشت: `{current:.2f}x`\n"
+            f"💵 شرط: `{amount_trx}` TRX\n"
+            f"🏆 دریافتی: `{prize_trx}` TRX\n"
+            f"💰 سود: `{round(prize_trx - amount_trx, 2)}` TRX\n\n"
+            f"🎉 تبریک! عالی بود!",
+            chat_id, game['msg_id'], parse_mode='Markdown', reply_markup=kb
+        )
+    except: pass
+
+@bot.callback_query_handler(func=lambda c: c.data == "crash_restart")
+def crash_restart(call):
+    uid = call.from_user.id
+    bot.answer_callback_query(call.id)
+    crash_ask_amount(call.message.chat.id, uid)
 
 # ==================== background thread ====================
 def background_thread():
